@@ -119,7 +119,7 @@ export async function collectFromGithub(
 ): Promise<GithubCollection> {
   const warnings: string[] = [];
   const recordedAt = new Date().toISOString();
-  const repositoryKey = `github:${slug}`;
+  const repositoryKey = `github:${slug.toLowerCase()}`;
 
   const pullRequests = new Map<string, PullRequestRecord>();
   const reviews: ReviewRecord[] = [];
@@ -244,7 +244,7 @@ function toReviews(
     if (review === null) continue;
     // A review with no submitted timestamp is still a pending draft; it has not happened yet.
     if (review.submittedAt === null) continue;
-    if (review.author?.login !== login) continue;
+    if (review.author?.login.toLowerCase() !== login.toLowerCase()) continue;
 
     out.push({
       repositoryKey,

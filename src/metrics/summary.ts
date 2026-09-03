@@ -12,11 +12,11 @@ import { MS_PER_HOUR, localDayKey } from "../domain/time.ts";
 import type { Db } from "../store/db.ts";
 import {
   readCommitsAuthored,
-  readCommitsLanded,
   readLastSyncRun,
   readPullRequestTitles,
   readPullRequestsMerged,
   readPullRequestsOpened,
+  readRepositoryCommitScope,
   readRepositories,
   readReviewsGiven,
 } from "../store/reads.ts";
@@ -25,7 +25,7 @@ import type { MetricWindow } from "./window.ts";
 
 export interface DailyBucket {
   readonly date: string;
-  readonly commitsLanded: number;
+  readonly commitsAuthored: number;
   readonly pullRequestsMerged: number;
   readonly reviewsGiven: number;
 }
@@ -71,7 +71,9 @@ export interface RepositoryStatus {
   readonly headSha: string | null;
   readonly headCommittedAt: string | null;
   readonly lastSyncedAt: string | null;
-  readonly commitsLanded: number;
+  readonly commitsAuthored: number;
+  readonly commitsObserved: number;
+  readonly authorEmails: readonly string[];
   readonly pullRequestsMerged: number;
 }
 
@@ -87,7 +89,7 @@ export interface ActivitySummary {
   };
   readonly identity: { readonly githubLogin: string | null; readonly gitEmails: readonly string[] };
   readonly totals: {
-    readonly commitsLanded: number;
+    readonly commitsAuthored: number;
     readonly pullRequestsOpened: number;
     readonly pullRequestsMerged: number;
     readonly reviewsGiven: number;
@@ -126,7 +128,6 @@ export function buildSummary(db: Db, window: MetricWindow, identity: Identity): 
   const range = { fromMs: window.fromMs, toMs: window.toMs };
   const zone = window.timeZone;
 
-  const landedCommits = readCommitsLanded(db, range, identity);
   const authoredCommits = readCommitsAuthored(db, range, identity);
   const opened = readPullRequestsOpened(db, range, identity);
   const merged = readPullRequestsMerged(db, range, identity);
@@ -140,8 +141,9 @@ export function buildSummary(db: Db, window: MetricWindow, identity: Identity): 
   for (const pr of merged) activeDays.add(localDayKey(pr.merged_at_ms ?? pr.created_at_ms, zone));
   for (const review of reviews) activeDays.add(localDayKey(review.submitted_at_ms, zone));
 
-  const daily = buildDaily(window, landedCommits, merged, reviews);
+  const daily = buildDaily(window, authoredCommits, merged, reviews);
   const reviewTitles = readPullRequestTitles(db, reviews.map((r) => r.pull_request_source_id));
+  const repositories = buildRepositoryStatus(db, range, identity, merged);
 
   return {
     generatedAt: new Date().toISOString(),
@@ -155,17 +157,17 @@ export function buildSummary(db: Db, window: MetricWindow, identity: Identity): 
     },
     identity: { githubLogin: identity.githubLogin, gitEmails: [...identity.gitEmails] },
     totals: {
-      commitsLanded: landedCommits.length,
+      commitsAuthored: authoredCommits.length,
       pullRequestsOpened: opened.length,
       pullRequestsMerged: merged.length,
       reviewsGiven: reviews.length,
       pullRequestsReviewed: new Set(reviews.map((r) => r.pull_request_source_id)).size,
       activeDays: activeDays.size,
-      additions: sum(landedCommits.map((c) => c.additions)),
-      deletions: sum(landedCommits.map((c) => c.deletions)),
-      filesChanged: sum(landedCommits.map((c) => c.files_changed)),
-      excludedAdditions: sum(landedCommits.map((c) => c.excluded_additions)),
-      excludedDeletions: sum(landedCommits.map((c) => c.excluded_deletions)),
+      additions: sum(authoredCommits.map((c) => c.additions)),
+      deletions: sum(authoredCommits.map((c) => c.deletions)),
+      filesChanged: sum(authoredCommits.map((c) => c.files_changed)),
+      excludedAdditions: sum(authoredCommits.map((c) => c.excluded_additions)),
+      excludedDeletions: sum(authoredCommits.map((c) => c.excluded_deletions)),
     },
     mergeTimeHours: {
       count: mergeHours.length,
@@ -186,7 +188,7 @@ export function buildSummary(db: Db, window: MetricWindow, identity: Identity): 
       changedFiles: pr.changed_files,
       url: pr.source_url,
     })),
-    recentCommits: landedCommits.slice(0, MAX_TABLE_ROWS).map((commit) => ({
+    recentCommits: authoredCommits.slice(0, MAX_TABLE_ROWS).map((commit) => ({
       repository: commit.repository_slug ?? commit.repository_key,
       sha: commit.sha,
       shortSha: commit.sha.slice(0, 8),
@@ -205,16 +207,21 @@ export function buildSummary(db: Db, window: MetricWindow, identity: Identity): 
       submittedAt: review.submitted_at,
       url: review.source_url,
     })),
-    repositories: buildRepositoryStatus(db, landedCommits, merged),
+    repositories,
     sync: buildSyncStatus(db),
-    warnings: buildWarnings(identity, db),
+    warnings: buildWarnings(
+      identity,
+      db,
+      repositories,
+      authoredCommits.length,
+    ),
     definitions: DEFINITIONS,
   };
 }
 
 function buildDaily(
   window: MetricWindow,
-  commits: readonly { committed_at_ms: number }[],
+  commits: readonly { authored_at_ms: number }[],
   merged: readonly { merged_at_ms: number | null; created_at_ms: number }[],
   reviews: readonly { submitted_at_ms: number }[],
 ): DailyBucket[] {
@@ -227,7 +234,7 @@ function buildDaily(
     if (bucket !== undefined) bucket[field] += 1;
   };
 
-  for (const commit of commits) bump(localDayKey(commit.committed_at_ms, zone), "commits");
+  for (const commit of commits) bump(localDayKey(commit.authored_at_ms, zone), "commits");
   for (const pr of merged) bump(localDayKey(pr.merged_at_ms ?? pr.created_at_ms, zone), "merged");
   for (const review of reviews) bump(localDayKey(review.submitted_at_ms, zone), "reviews");
 
@@ -235,7 +242,7 @@ function buildDaily(
     const bucket = buckets.get(date) ?? { commits: 0, merged: 0, reviews: 0 };
     return {
       date,
-      commitsLanded: bucket.commits,
+      commitsAuthored: bucket.commits,
       pullRequestsMerged: bucket.merged,
       reviewsGiven: bucket.reviews,
     };
@@ -244,23 +251,31 @@ function buildDaily(
 
 function buildRepositoryStatus(
   db: Db,
-  commits: readonly { repository_key: string }[],
+  range: { readonly fromMs: number; readonly toMs: number },
+  identity: Identity,
   merged: readonly { repository_key: string }[],
 ): RepositoryStatus[] {
-  const commitCounts = countBy(commits.map((c) => c.repository_key));
   const mergedCounts = countBy(merged.map((pr) => pr.repository_key));
+  const scope = new Map(
+    readRepositoryCommitScope(db, range, identity).map((row) => [row.repository_key, row]),
+  );
 
-  return readRepositories(db).map((row) => ({
-    key: row.key,
-    slug: row.slug,
-    localPath: row.local_path,
-    defaultRef: row.default_ref,
-    headSha: row.head_sha,
-    headCommittedAt: row.head_committed_at,
-    lastSyncedAt: row.last_synced_at,
-    commitsLanded: commitCounts.get(row.key) ?? 0,
-    pullRequestsMerged: mergedCounts.get(row.key) ?? 0,
-  }));
+  return readRepositories(db).map((row) => {
+    const observed = scope.get(row.key);
+    return {
+      key: row.key,
+      slug: row.slug,
+      localPath: row.local_path,
+      defaultRef: row.default_ref,
+      headSha: row.head_sha,
+      headCommittedAt: row.head_committed_at,
+      lastSyncedAt: row.last_synced_at,
+      commitsAuthored: observed?.commits_matched ?? 0,
+      commitsObserved: observed?.commits_observed ?? 0,
+      authorEmails: (observed?.author_emails ?? "").split(",").filter(Boolean).sort(),
+      pullRequestsMerged: mergedCounts.get(row.key) ?? 0,
+    };
+  });
 }
 
 function buildSyncStatus(db: Db): ActivitySummary["sync"] {
@@ -269,7 +284,12 @@ function buildSyncStatus(db: Db): ActivitySummary["sync"] {
   return { lastRunAt: run.finished_at ?? run.started_at, status: run.status, since: run.since };
 }
 
-function buildWarnings(identity: Identity, db: Db): string[] {
+function buildWarnings(
+  identity: Identity,
+  db: Db,
+  repositories: readonly RepositoryStatus[],
+  uniqueCommits: number,
+): string[] {
   const warnings: string[] = [];
   if (identity.gitEmails.length === 0) {
     warnings.push(
@@ -283,10 +303,41 @@ function buildWarnings(identity: Identity, db: Db): string[] {
         "Set identity.githubLogin.",
     );
   }
+  const matchedCopies = sum(repositories.map((repo) => repo.commitsAuthored));
+  if (matchedCopies > uniqueCommits) {
+    warnings.push(
+      `${matchedCopies - uniqueCommits} duplicate commit ${matchedCopies - uniqueCommits === 1 ? "copy was" : "copies were"} ` +
+        "found across configured repositories and counted once by SHA.",
+    );
+  }
   const run = readLastSyncRun(db);
   if (run === null) warnings.push("Nothing has been synced yet. Run `overview sync`.");
-  else if (run.status === "failed") warnings.push("The last sync reported errors; numbers may be incomplete.");
+  else {
+    if (run.status === "failed") warnings.push("The last sync reported errors; numbers may be incomplete.");
+    warnings.push(...readSyncWarnings(run.notes));
+  }
   return warnings;
+}
+
+function readSyncWarnings(notes: string | null): string[] {
+  if (notes === null) return [];
+  try {
+    const parsed = JSON.parse(notes) as {
+      warnings?: unknown;
+      repositories?: { repositoryKey?: unknown; error?: unknown }[];
+    };
+    const warnings = Array.isArray(parsed.warnings)
+      ? parsed.warnings.filter((value): value is string => typeof value === "string")
+      : [];
+    for (const repo of Array.isArray(parsed.repositories) ? parsed.repositories : []) {
+      if (typeof repo.repositoryKey === "string" && typeof repo.error === "string") {
+        warnings.push(`${repo.repositoryKey}: ${repo.error}`);
+      }
+    }
+    return [...new Set(warnings)];
+  } catch {
+    return ["The last sync diagnostics could not be read; run `overview sync` again."];
+  }
 }
 
 function countBy(keys: readonly string[]): Map<string, number> {
@@ -297,9 +348,9 @@ function countBy(keys: readonly string[]): Map<string, number> {
 
 /** Stated in the payload so the dashboard can show exactly what it is counting. */
 const DEFINITIONS: Readonly<Record<string, string>> = {
-  commitsLanded:
+  commitsAuthored:
     "Non-merge commits authored by you that are reachable from each repository's default " +
-    "branch, counted by committer date — when the work reached the branch.",
+    "branch, counted by author date. The original author and committer timestamps are both stored.",
   activeDays:
     "Local calendar days in the window with at least one commit you authored (by author " +
     "date), pull request you opened or landed, or review you submitted.",

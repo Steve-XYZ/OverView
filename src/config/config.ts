@@ -26,11 +26,7 @@ export interface OverviewConfig {
   };
   readonly repositories: readonly RepoConfig[];
   readonly sync: {
-    /**
-     * How far back to ingest. Kept well above the largest dashboard window so that
-     * author-date metrics near the 90-day edge are not truncated by the git
-     * `--since` filter, which matches on committer date.
-     */
+    /** How far back to retain and ingest commits, based on author date. */
     readonly sinceDays: number;
     /** Run `git fetch --quiet` before walking history. Off by default: it touches the network. */
     readonly fetchBeforeSync: boolean;
@@ -126,10 +122,17 @@ function validateConfig(raw: unknown, source: string): OverviewConfig {
   const base = defaultConfig();
 
   const identityRaw = isRecord(raw["identity"]) ? raw["identity"] : {};
-  const githubLogin = optionalString(identityRaw["githubLogin"], `${source}: identity.githubLogin`);
-  const gitEmails = stringArray(identityRaw["gitEmails"], `${source}: identity.gitEmails`)
-    .map((email) => email.trim().toLowerCase())
-    .filter((email) => email.length > 0);
+  const githubLogin = optionalString(
+    identityRaw["githubLogin"],
+    `${source}: identity.githubLogin`,
+  )?.toLowerCase() ?? null;
+  const gitEmails = [
+    ...new Set(
+      stringArray(identityRaw["gitEmails"], `${source}: identity.gitEmails`)
+        .map((email) => email.trim().toLowerCase())
+        .filter((email) => email.length > 0),
+    ),
+  ];
 
   const repositoriesRaw = raw["repositories"];
   if (repositoriesRaw !== undefined && !Array.isArray(repositoriesRaw)) {

@@ -29,7 +29,7 @@ describe("the local server", () => {
     const summary = (await response.json()) as ActivitySummary;
     assert.equal(summary.window.days, 7);
     assert.equal(summary.daily.length, 7);
-    assert.equal(summary.totals.commitsLanded, 1);
+    assert.equal(summary.totals.commitsAuthored, 1);
   });
 
   it("falls back to the default window for junk input", async () => {

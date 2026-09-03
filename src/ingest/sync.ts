@@ -10,6 +10,9 @@ import type { OverviewConfig, RepoConfig } from "../config/config.ts";
 import type { Db } from "../store/db.ts";
 import { transaction } from "../store/db.ts";
 import {
+  deleteRepositoriesOutsidePaths,
+  deleteRepositoryAliases,
+  deleteUnseenCommits,
   finishSyncRun,
   startSyncRun,
   upsertCommits,
@@ -61,6 +64,9 @@ export async function sync(
   const sinceDay = sinceIso.slice(0, 10);
 
   const repos = selectRepos(config.repositories, options.only);
+  transaction(db, () => {
+    deleteRepositoriesOutsidePaths(db, config.repositories.map((repo) => repo.path));
+  });
   if (repos.length === 0) {
     warnings.push(
       options.only === undefined
@@ -72,16 +78,28 @@ export async function sync(
   const github = options.skipGithub === true ? null : await resolveGithub(config, warnings);
   const syncRunId = startSyncRun(db, sinceIso, github);
   const results: RepoSyncResult[] = [];
+  const seenRepositoryKeys = new Set<string>();
 
   for (const repo of repos) {
     log(`syncing ${repo.path}`);
     try {
-      results.push(await syncRepo(db, repo, config, { syncRunId, sinceIso, sinceDay, github, log, warnings }));
+      results.push(await syncRepo(db, repo, config, {
+        syncRunId,
+        sinceIso,
+        sinceDay,
+        github,
+        log,
+        warnings,
+        seenRepositoryKeys,
+      }));
     } catch (error) {
       const reason = message(error);
       log(`  failed: ${reason}`);
       results.push({
-        repositoryKey: repo.githubRepo ?? `path:${repo.path}`,
+        repositoryKey:
+          repo.githubRepo === undefined
+            ? `path:${repo.path}`
+            : `github:${repo.githubRepo.toLowerCase()}`,
         commits: 0,
         pullRequests: 0,
         reviews: 0,
@@ -108,6 +126,7 @@ interface RepoSyncContext {
   readonly github: string | null;
   readonly log: (line: string) => void;
   readonly warnings: string[];
+  readonly seenRepositoryKeys: Set<string>;
 }
 
 async function syncRepo(
@@ -124,9 +143,26 @@ async function syncRepo(
   });
   context.warnings.push(...collected.warnings);
 
+  if (context.seenRepositoryKeys.has(collected.repository.key)) {
+    context.warnings.push(
+      `${repo.path}: duplicate checkout for ${collected.repository.key}; ignored because it was ` +
+        `already synced from an earlier configured path.`,
+    );
+    return {
+      repositoryKey: collected.repository.key,
+      commits: 0,
+      pullRequests: 0,
+      reviews: 0,
+      error: null,
+    };
+  }
+  context.seenRepositoryKeys.add(collected.repository.key);
+
   const repositoryId = transaction(db, () => {
+    deleteRepositoryAliases(db, collected.repository.localPath ?? repo.path, collected.repository.key);
     const id = upsertRepository(db, collected.repository);
     upsertCommits(db, id, collected.commits);
+    deleteUnseenCommits(db, id, Date.parse(context.sinceIso), context.syncRunId);
     return id;
   });
   context.log(`  ${collected.commits.length} commits from ${collected.repository.defaultRef}`);

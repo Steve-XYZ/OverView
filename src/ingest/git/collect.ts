@@ -8,6 +8,8 @@ import {
   detectDefaultRef,
   detectGithubSlug,
   fetchOrigin,
+  isShallowRepository,
+  readGitCommitCandidates,
   readGitLog,
 } from "./gitCli.ts";
 
@@ -47,12 +49,18 @@ export async function collectFromGit(
   if (!head.ref.startsWith("origin/")) {
     warnings.push(
       `${repoConfig.path}: no remote-tracking default branch, walked local "${head.ref}" — ` +
-        `commits landed by others may be missing.`,
+        `commits present only on the remote default branch may be missing.`,
+    );
+  }
+  if (await isShallowRepository(repoConfig.path)) {
+    warnings.push(
+      `${repoConfig.path}: this is a shallow checkout; commits older than its history boundary ` +
+        `are unavailable and dashboard counts may be incomplete.`,
     );
   }
 
   const repository: RepositoryRecord = {
-    key: slug === null ? `path:${repoConfig.path}` : `github:${slug}`,
+    key: slug === null ? `path:${repoConfig.path}` : `github:${slug.toLowerCase()}`,
     localPath: repoConfig.path,
     provider: slug === null ? null : "github",
     slug,
@@ -62,7 +70,14 @@ export async function collectFromGit(
     headCommittedAt: head.committedAt,
   };
 
-  const stdout = await readGitLog(repoConfig.path, head.ref, options.sinceIso, LOG_FORMAT);
+  // Git's --since filter uses committer date. Scan cheap commit metadata first,
+  // apply the lower bound to author date, then compute numstat only for that subset.
+  const sinceMs = Date.parse(options.sinceIso);
+  const candidates = await readGitCommitCandidates(repoConfig.path, head.ref);
+  const shas = candidates
+    .filter((candidate) => Date.parse(candidate.authoredAt) >= sinceMs)
+    .map((candidate) => candidate.sha);
+  const stdout = await readGitLog(repoConfig.path, shas, LOG_FORMAT);
   const recordedAt = new Date().toISOString();
 
   const commits = parseGitLog(stdout, options.excludePaths).map((parsed): CommitRecord => {

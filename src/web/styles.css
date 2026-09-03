@@ -18,7 +18,7 @@
   --border: rgba(11, 11, 11, 0.1);
   --hover-wash: rgba(11, 11, 11, 0.04);
 
-  --series-1: #2a78d6; /* commits landed */
+  --series-1: #2a78d6; /* commits authored */
   --series-2: #eb6834; /* pull requests merged */
   --series-3: #1baf7a; /* reviews given */
 

@@ -74,6 +74,13 @@ export interface RepositoryRow {
   readonly last_synced_at: string | null;
 }
 
+export interface RepositoryCommitScopeRow {
+  readonly repository_key: string;
+  readonly commits_observed: number;
+  readonly commits_matched: number;
+  readonly author_emails: string;
+}
+
 export interface SyncRunRow {
   readonly id: number;
   readonly started_at: string;
@@ -101,27 +108,11 @@ const PR_COLUMNS = `
   p.source_id, p.source_url`;
 
 /**
- * Commits that reached the default branch inside the range, authored by the user.
+ * Non-merge commits authored by the user inside the range.
  *
- * Merge commits are excluded: they carry no authored change of their own and would
- * double-count the work already counted on the branch they merge.
+ * The same commit can be reachable from an upstream repository and a configured
+ * fork. Its SHA is source identity, so select one deterministic copy globally.
  */
-export function readCommitsLanded(db: Db, range: TimeRange, identity: Identity): CommitRow[] {
-  if (identity.gitEmails.length === 0) return [];
-  const emails = placeholders(identity.gitEmails.length);
-  return db
-    .prepare(
-      `SELECT ${COMMIT_COLUMNS}
-       FROM commit_event c JOIN repository r ON r.id = c.repository_id
-       WHERE c.is_merge = 0
-         AND c.committed_at_ms >= ? AND c.committed_at_ms <= ?
-         AND c.author_email IN (${emails})
-       ORDER BY c.committed_at_ms DESC`,
-    )
-    .all(range.fromMs, range.toMs, ...identity.gitEmails) as unknown as CommitRow[];
-}
-
-/** Same commits, windowed on when the author wrote them rather than when they landed. */
 export function readCommitsAuthored(db: Db, range: TimeRange, identity: Identity): CommitRow[] {
   if (identity.gitEmails.length === 0) return [];
   const emails = placeholders(identity.gitEmails.length);
@@ -132,9 +123,37 @@ export function readCommitsAuthored(db: Db, range: TimeRange, identity: Identity
        WHERE c.is_merge = 0
          AND c.authored_at_ms >= ? AND c.authored_at_ms <= ?
          AND c.author_email IN (${emails})
-       ORDER BY c.authored_at_ms DESC`,
+         AND c.repository_id = (
+           SELECT MIN(copy.repository_id) FROM commit_event copy WHERE copy.sha = c.sha
+         )
+       ORDER BY c.authored_at_ms DESC, c.sha`,
     )
     .all(range.fromMs, range.toMs, ...identity.gitEmails) as unknown as CommitRow[];
+}
+
+/** Per-repository commit and author scope, before identity filtering. */
+export function readRepositoryCommitScope(
+  db: Db,
+  range: TimeRange,
+  identity: Identity,
+): RepositoryCommitScopeRow[] {
+  const matchExpression =
+    identity.gitEmails.length === 0
+      ? "0"
+      : `SUM(CASE WHEN c.author_email IN (${placeholders(identity.gitEmails.length)}) THEN 1 ELSE 0 END)`;
+  return db
+    .prepare(
+      `SELECT r.key AS repository_key,
+              COUNT(*) AS commits_observed,
+              ${matchExpression} AS commits_matched,
+              GROUP_CONCAT(DISTINCT c.author_email) AS author_emails
+       FROM commit_event c JOIN repository r ON r.id = c.repository_id
+       WHERE c.is_merge = 0
+         AND c.authored_at_ms >= ? AND c.authored_at_ms <= ?
+       GROUP BY r.key
+       ORDER BY r.key`,
+    )
+    .all(...identity.gitEmails, range.fromMs, range.toMs) as unknown as RepositoryCommitScopeRow[];
 }
 
 /** Pull requests the user opened inside the range. */
@@ -148,7 +167,8 @@ export function readPullRequestsOpened(
     .prepare(
       `SELECT ${PR_COLUMNS}
        FROM pull_request p JOIN repository r ON r.id = p.repository_id
-       WHERE p.author_login = ? AND p.created_at_ms >= ? AND p.created_at_ms <= ?
+       WHERE p.author_login = ? COLLATE NOCASE
+         AND p.created_at_ms >= ? AND p.created_at_ms <= ?
        ORDER BY p.created_at_ms DESC`,
     )
     .all(identity.githubLogin, range.fromMs, range.toMs) as unknown as PullRequestRow[];
@@ -165,7 +185,7 @@ export function readPullRequestsMerged(
     .prepare(
       `SELECT ${PR_COLUMNS}
        FROM pull_request p JOIN repository r ON r.id = p.repository_id
-       WHERE p.author_login = ?
+       WHERE p.author_login = ? COLLATE NOCASE
          AND p.merged_at_ms IS NOT NULL
          AND p.merged_at_ms >= ? AND p.merged_at_ms <= ?
        ORDER BY p.merged_at_ms DESC`,
@@ -182,7 +202,7 @@ export function readReviewsGiven(db: Db, range: TimeRange, identity: Identity): 
               v.pull_request_number, v.pull_request_source_id, v.state,
               v.submitted_at, v.submitted_at_ms, v.source_url
        FROM review v JOIN repository r ON r.id = v.repository_id
-       WHERE v.reviewer_login = ?
+       WHERE v.reviewer_login = ? COLLATE NOCASE
          AND v.submitted_at_ms >= ? AND v.submitted_at_ms <= ?
        ORDER BY v.submitted_at_ms DESC`,
     )

@@ -16,7 +16,7 @@ export function renderTextReport(summary: ActivitySummary): string {
   lines.push("");
 
   lines.push(
-    row("Commits landed", t.commitsLanded) +
+    row("Commits authored", t.commitsAuthored) +
       row("PRs opened", t.pullRequestsOpened) +
       row("PRs merged", t.pullRequestsMerged),
   );
@@ -49,10 +49,10 @@ export function renderTextReport(summary: ActivitySummary): string {
   }
 
   if (summary.recentCommits.length > 0) {
-    lines.push(`Recent commits (showing ${summary.recentCommits.length} of ${t.commitsLanded})`);
+    lines.push(`Recent commits (showing ${summary.recentCommits.length} of ${t.commitsAuthored})`);
     for (const commit of summary.recentCommits) {
       lines.push(
-        `  ${commit.committedAt.slice(0, 10)}  ${commit.shortSha}  ${commit.repository}  ` +
+        `  ${commit.authoredAt.slice(0, 10)}  ${commit.shortSha}  ${commit.repository}  ` +
           `${truncate(commit.subject, 56)}  +${commit.additions}/-${commit.deletions}`,
       );
     }
@@ -73,8 +73,9 @@ export function renderTextReport(summary: ActivitySummary): string {
   lines.push("Repositories");
   for (const repo of summary.repositories) {
     lines.push(
-      `  ${repo.slug ?? repo.localPath ?? repo.key}  ref=${repo.defaultRef ?? "?"}  ` +
-        `head=${(repo.headSha ?? "").slice(0, 8)}  commits=${repo.commitsLanded}  merged=${repo.pullRequestsMerged}`,
+      `  ${repo.slug ?? repo.key}  path=${repo.localPath ?? "?"}  ref=${repo.defaultRef ?? "?"}  ` +
+        `head=${(repo.headSha ?? "").slice(0, 8)}  commits=${repo.commitsAuthored}/${repo.commitsObserved}  ` +
+        `authors=${repo.authorEmails.join(",") || "?"}  merged=${repo.pullRequestsMerged}`,
     );
   }
 
@@ -88,7 +89,7 @@ export function renderTextReport(summary: ActivitySummary): string {
 }
 
 function row(label: string, value: string | number): string {
-  return `  ${label.padEnd(16)}${String(value).padEnd(12)}`;
+  return `  ${label.padEnd(18)}${String(value).padEnd(12)}`;
 }
 
 export function formatHours(hours: number | null): string {

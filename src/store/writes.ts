@@ -71,6 +71,28 @@ export function repositoryId(db: Db, key: string): number {
   return Number(row.id);
 }
 
+/** Keep the cache aligned with the repository paths in the current config. */
+export function deleteRepositoriesOutsidePaths(db: Db, paths: readonly string[]): number {
+  const result =
+    paths.length === 0
+      ? db.prepare("DELETE FROM repository").run()
+      : db
+          .prepare(
+            `DELETE FROM repository
+             WHERE local_path IS NULL OR local_path NOT IN (${paths.map(() => "?").join(", ")})`,
+          )
+          .run(...paths);
+  return Number(result.changes);
+}
+
+/** A checkout can change remotes; one configured path must not retain two repository keys. */
+export function deleteRepositoryAliases(db: Db, localPath: string, key: string): number {
+  const result = db
+    .prepare("DELETE FROM repository WHERE local_path = ? AND key != ?")
+    .run(localPath, key);
+  return Number(result.changes);
+}
+
 export function upsertCommits(db: Db, repositoryId: number, commits: readonly CommitRecord[]): number {
   const statement = db.prepare(
     `INSERT INTO commit_event (
@@ -138,6 +160,22 @@ export function upsertCommits(db: Db, repositoryId: number, commits: readonly Co
   return commits.length;
 }
 
+/** Remove recent rows that are no longer reachable after a rebase, squash, or force-push. */
+export function deleteUnseenCommits(
+  db: Db,
+  repositoryId: number,
+  sinceMs: number,
+  syncRunId: number,
+): number {
+  const result = db
+    .prepare(
+      `DELETE FROM commit_event
+       WHERE repository_id = ? AND authored_at_ms >= ? AND sync_run_id != ?`,
+    )
+    .run(repositoryId, sinceMs, syncRunId);
+  return Number(result.changes);
+}
+
 export function upsertPullRequests(
   db: Db,
   repositoryId: number,
@@ -181,7 +219,7 @@ export function upsertPullRequests(
       pr.title,
       pr.state,
       pr.isDraft ? 1 : 0,
-      pr.authorLogin,
+      pr.authorLogin?.toLowerCase() ?? null,
       toIsoUtc(pr.createdAt),
       toEpochMs(pr.createdAt),
       pr.mergedAt === null ? null : toIsoUtc(pr.mergedAt),
@@ -229,7 +267,7 @@ export function upsertReviews(db: Db, repositoryId: number, reviews: readonly Re
       repositoryId,
       review.pullRequestSourceId,
       review.pullRequestNumber,
-      review.reviewerLogin,
+      review.reviewerLogin.toLowerCase(),
       review.state,
       toIsoUtc(review.submittedAt),
       toEpochMs(review.submittedAt),
