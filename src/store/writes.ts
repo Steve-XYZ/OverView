@@ -7,6 +7,7 @@
 
 import type {
   CommitRecord,
+  LinearIssueRecord,
   PullRequestRecord,
   RepositoryRecord,
   ReviewRecord,
@@ -185,9 +186,9 @@ export function upsertPullRequests(
     `INSERT INTO pull_request (
        repository_id, number, title, state, is_draft, author_login,
        created_at, created_at_ms, merged_at, merged_at_ms, closed_at, closed_at_ms,
-       updated_at, additions, deletions, changed_files, base_ref, merge_commit_sha,
+       updated_at, additions, deletions, changed_files, base_ref, head_ref, merge_commit_sha,
        source_system, source_id, source_url, recorded_at, sync_run_id)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
      ON CONFLICT (source_id) DO UPDATE SET
        repository_id    = excluded.repository_id,
        number           = excluded.number,
@@ -206,6 +207,7 @@ export function upsertPullRequests(
        deletions        = excluded.deletions,
        changed_files    = excluded.changed_files,
        base_ref         = excluded.base_ref,
+       head_ref         = excluded.head_ref,
        merge_commit_sha = excluded.merge_commit_sha,
        source_url       = excluded.source_url,
        recorded_at      = excluded.recorded_at,
@@ -231,6 +233,7 @@ export function upsertPullRequests(
       pr.deletions,
       pr.changedFiles,
       pr.baseRef,
+      pr.headRef,
       pr.mergeCommitSha,
       pr.provenance.sourceSystem,
       pr.provenance.sourceId,
@@ -279,4 +282,67 @@ export function upsertReviews(db: Db, repositoryId: number, reviews: readonly Re
     );
   }
   return reviews.length;
+}
+
+/**
+ * Linear issues are workspace-global, so there is no repository id. Upsert on
+ * both the Linear UUID (`source_id`) and the human identifier (`BOS-2422`): an
+ * issue keeps its UUID when it moves teams, but the identifier is the join key
+ * the dashboard links on.
+ */
+export function upsertLinearIssues(db: Db, issues: readonly LinearIssueRecord[]): number {
+  const statement = db.prepare(
+    `INSERT INTO linear_issue (
+       identifier, title, state_name, state_type,
+       created_at, created_at_ms, updated_at, updated_at_ms,
+       completed_at, completed_at_ms, team_key,
+       source_system, source_id, source_url, recorded_at, sync_run_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT (source_id) DO UPDATE SET
+        identifier      = excluded.identifier,
+        title           = excluded.title,
+        state_name      = excluded.state_name,
+        state_type      = excluded.state_type,
+        created_at      = excluded.created_at,
+        created_at_ms   = excluded.created_at_ms,
+        updated_at      = excluded.updated_at,
+        updated_at_ms   = excluded.updated_at_ms,
+        completed_at    = excluded.completed_at,
+        completed_at_ms = excluded.completed_at_ms,
+        team_key        = excluded.team_key,
+        source_url      = excluded.source_url,
+        recorded_at     = excluded.recorded_at,
+        sync_run_id     = excluded.sync_run_id`,
+  );
+
+  for (const issue of issues) {
+    statement.run(
+      issue.identifier.toUpperCase(),
+      issue.title,
+      issue.stateName,
+      issue.stateType,
+      toIsoUtc(issue.createdAt),
+      toEpochMs(issue.createdAt),
+      toIsoUtc(issue.updatedAt),
+      toEpochMs(issue.updatedAt),
+      issue.completedAt === null ? null : toIsoUtc(issue.completedAt),
+      issue.completedAt === null ? null : toEpochMs(issue.completedAt),
+      issue.teamKey,
+      issue.provenance.sourceSystem,
+      issue.provenance.sourceId,
+      issue.provenance.sourceUrl,
+      issue.provenance.recordedAt,
+      issue.provenance.syncRunId,
+    );
+  }
+
+  // An issue that moved teams keeps its UUID but changes identifier. The human
+  // key must stay unique, so drop any stale row holding the new identifier.
+  const dedupe = db.prepare(
+    `DELETE FROM linear_issue
+      WHERE id NOT IN (SELECT MIN(id) FROM linear_issue GROUP BY identifier)`,
+  );
+  dedupe.run();
+
+  return issues.length;
 }

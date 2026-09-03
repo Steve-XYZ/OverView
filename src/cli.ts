@@ -38,7 +38,7 @@ const USAGE = `overview — what did I ship?
   overview init [--repo <path>]...     Create ${CONFIG_FILENAME} and detect your identity
   overview repo add <path> [--github owner/name]
   overview repo list
-  overview sync [--days N] [--only <text>] [--no-github]
+  overview sync [--days N] [--only <text>] [--no-github] [--no-linear]
   overview report [--days N]
   overview serve [--port N] [--host H]
 
@@ -195,6 +195,7 @@ async function commandSync(argv: string[]): Promise<void> {
       days: { type: "string" },
       only: { type: "string" },
       "no-github": { type: "boolean" },
+      "no-linear": { type: "boolean" },
     },
     allowPositionals: false,
   });
@@ -206,6 +207,7 @@ async function commandSync(argv: string[]): Promise<void> {
       ...(values.days === undefined ? {} : { sinceDays: Number.parseInt(values.days, 10) }),
       ...(values.only === undefined ? {} : { only: values.only }),
       ...(values["no-github"] === true ? { skipGithub: true } : {}),
+      ...(values["no-linear"] === true ? { skipLinear: true } : {}),
       log: (line) => process.stdout.write(`${line}\n`),
     });
 
@@ -221,13 +223,15 @@ async function commandSync(argv: string[]): Promise<void> {
     process.stdout.write(
       `\nSync #${result.syncRunId} since ${result.sinceIso.slice(0, 10)} as ` +
         `${result.login ?? "(no GitHub login)"}\n` +
-        `  ${totals.commits} commits, ${totals.pullRequests} pull requests, ${totals.reviews} reviews\n` +
+        `  ${totals.commits} commits, ${totals.pullRequests} pull requests, ${totals.reviews} reviews, ` +
+        `${result.linearIssues} Linear issues\n` +
         `  database ${databasePath}\n`,
     );
     for (const warning of result.warnings) process.stdout.write(`  ⚠ ${warning}\n`);
     for (const repo of result.repositories) {
       if (repo.error !== null) process.stdout.write(`  ✗ ${repo.repositoryKey}: ${repo.error}\n`);
     }
+    if (result.linearError !== null) process.stdout.write(`  ✗ Linear: ${result.linearError}\n`);
     if (config.identity.githubLogin === null && result.login !== null) {
       process.stdout.write(
         `\nTip: set identity.githubLogin to "${result.login}" in ${configPath} so reports do not have to guess.\n`,

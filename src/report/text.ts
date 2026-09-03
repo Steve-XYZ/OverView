@@ -70,6 +70,33 @@ export function renderTextReport(summary: ActivitySummary): string {
     lines.push("");
   }
 
+  const coverage = summary.linear.coverage;
+  const share =
+    coverage.linkedShare === null ? "—" : `${Math.round(coverage.linkedShare * 100)}%`;
+  lines.push(
+    `Linear completed (${summary.linear.completedIssues.length})  ` +
+      `PR coverage ${coverage.linkedPullRequests}/${coverage.landedPullRequests} linked (${share})`,
+  );
+  for (const issue of summary.linear.completedIssues) {
+    lines.push(
+      `  ${issue.completedAt.slice(0, 10)}  ${issue.identifier}  ${truncate(issue.title, 52)}`,
+    );
+    for (const pr of issue.pullRequests) {
+      lines.push(
+        `    PR ${pr.repository}#${pr.number} via ${pr.via.join("+")}  ${truncate(pr.title, 44)}`,
+      );
+    }
+    for (const commit of issue.commits) {
+      lines.push(
+        `    ${commit.shortSha} via ${commit.via}  ${truncate(commit.subject, 44)}`,
+      );
+    }
+    if (issue.pullRequests.length === 0 && issue.commits.length === 0) {
+      lines.push(`    (no linked pull requests or commits in this window)`);
+    }
+  }
+  lines.push("");
+
   lines.push("Repositories");
   for (const repo of summary.repositories) {
     lines.push(

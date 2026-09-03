@@ -101,6 +101,7 @@ function render(summary: ActivitySummary): void {
   drawChart(summary);
   renderChartTable(summary);
   renderPullRequests(summary);
+  renderLinear(summary);
   renderCommits(summary);
   renderReviews(summary);
   renderRepositories(summary);
@@ -387,8 +388,47 @@ function renderPullRequests(summary: ActivitySummary): void {
   );
 }
 
-function renderCommits(summary: ActivitySummary): void {
-  const commits = summary.recentCommits;
+function renderLinear(summary: ActivitySummary): void {
+  const issues = summary.linear.completedIssues;
+  const coverage = summary.linear.coverage;
+  const share = coverage.linkedShare === null ? "—" : `${Math.round(coverage.linkedShare * 100)}%`;
+  byId("linear-sub").textContent =
+    issues.length === 0
+      ? `No Linear issues completed in this window · ${coverage.linkedPullRequests}/` +
+        `${coverage.landedPullRequests} landed PRs linked (${share}).`
+      : `${issues.length} completed · ${coverage.linkedPullRequests}/` +
+        `${coverage.landedPullRequests} landed PRs linked (${share}). ` +
+        `A PR counts when its title or branch names a synced issue.`;
+
+  byId("linear-table").replaceChildren(
+    issues.length === 0
+      ? text("p", "empty", "No Linear issues completed in this window.")
+      : table(
+          ["Completed", "Issue", "Contributed in this window"],
+          issues.map((issue) => {
+            const contributions: string[] = [];
+            for (const pr of issue.pullRequests) {
+              contributions.push(`PR ${pr.repository}#${pr.number} via ${pr.via.join("+")}`);
+            }
+            for (const commit of issue.commits) {
+              contributions.push(`${commit.shortSha} via ${commit.via}`);
+            }
+            return [
+              cell(shortDate(issue.completedAt.slice(0, 10)), "meta"),
+              linkCell(issue.identifier, issue.title, issue.url),
+              cell(
+                contributions.length === 0
+                  ? "no linked PRs or commits in this window"
+                  : contributions.join(" · "),
+                "meta",
+              ),
+            ];
+          }),
+        ),
+  );
+}
+
+function renderCommits(summary: ActivitySummary): void {  const commits = summary.recentCommits;
   byId("commits-sub").textContent = countNote(
     commits.length,
     summary.totals.commitsAuthored,

@@ -12,6 +12,7 @@ loopback interface. Nothing leaves the machine and no credential is stored.
 - Node 24 or newer (for `node:sqlite` and native TypeScript execution)
 - `git`
 - `gh`, authenticated (`gh auth login`) — optional; without it you get commits only
+- `LINEAR_API_KEY` in the environment — optional; without it you get no Linear issues
 
 Zero runtime dependencies. TypeScript 7 is the only devDependency.
 
@@ -32,6 +33,15 @@ node dist/cli.js serve            # http://127.0.0.1:4317
 source of wrong counts. If you commit under a work address, a personal address and a
 GitHub noreply address, all three belong in that list.
 
+For the Linear slice, create a personal API key in Linear Settings → Security &
+access and export it before syncing. The key is sent as the `Authorization`
+header, never stored, and never leaves your machine except to `api.linear.app`:
+
+```bash
+export LINEAR_API_KEY=lin_api_...
+node dist/cli.js sync
+```
+
 ## Commands
 
 | Command | What it does |
@@ -39,7 +49,7 @@ GitHub noreply address, all three belong in that list.
 | `init [--repo <path>]...` | Write `overview.config.json`, detecting identity |
 | `repo add <path> [--github owner/name] [--branch main]` | Add a repository |
 | `repo list` | Show what is configured |
-| `sync [--days N] [--only <text>] [--no-github]` | Ingest into the local database |
+| `sync [--days N] [--only <text>] [--no-github] [--no-linear]` | Ingest into the local database |
 | `report [--days N] [--json]` | Print the metrics |
 | `serve [--port N] [--host H]` | Serve the dashboard |
 
@@ -71,6 +81,15 @@ dashboard repeats these definitions at the bottom of the page.
 - **Time to merge** — hours from creation to merge, reported as **median and p75, never
   a mean**. The distribution has a long tail; one pull request that sat over a holiday
   would drag a mean away from anything you experienced.
+- **Linear completed** — Linear issues assigned to you, counted on the day they
+  entered a completed state. Only synced issues appear, so setting
+  `LINEAR_API_KEY` is what makes this tile non-empty.
+- **PR coverage** — share of your landed pull requests in the window whose title or
+  source branch names a synced Linear issue (for example `BOS-2422`). A pull
+  request only counts as linked when the identifier matches an issue already in
+  the database, and each link keeps whether it came from the title or the
+  branch. Commits link the same way through their subject, or as the squash
+  commit of a linked pull request.
 
 A window of N days is the N local calendar days ending today, today included, so
 "17 / 30 active days" compares like with like. Bucketing uses your local zone, not UTC.
@@ -82,6 +101,9 @@ id), `source_url`, `recorded_at` and the `sync_run_id` that fetched it. The
 `repository` table records the ref actually walked and the head it saw, so a stale
 `origin/main` is visible rather than silent. The `sync_run` table keeps one row per
 run with its counts and warnings. Commit rows retain both author and committer dates.
+Linear issues live in `linear_issue` with the same provenance columns; the human
+identifier (`BOS-2422`) is the join key, and pull-request links keep whether they
+came from `pr_title` or `pr_branch`.
 
 That means any figure on the dashboard can be reconstructed from the database:
 
@@ -104,6 +126,7 @@ src/
   ingest/
     git/      Local checkout -> CommitRecord. Knows git; knows no SQL.
     github/   `gh api graphql` -> PullRequestRecord, ReviewRecord.
+    linear/   `api.linear.app` with LINEAR_API_KEY -> LinearIssueRecord. Separate collector.
     sync.ts   Decides what to run and hands records to the write layer.
   store/      SQLite. writes.ts is the only path in; reads.ts the only path out.
   metrics/    Windows, statistics, and the summary the dashboard eats.
@@ -112,8 +135,10 @@ src/
 ```
 
 The boundaries are one-directional: `ingest` and `metrics` both depend on `domain` and
-`store`, never on each other; `web` depends only on the JSON shape. That is what makes
-the likely next steps additive rather than a rewrite:
+`store`, never on each other; `web` depends only on the JSON shape. Linear follows
+the same rule: its collector produces records, and the deterministic title/branch
+join lives in `domain/linear.ts` so metrics can use it without importing ingestion.
+That is what makes the likely next steps additive rather than a rewrite:
 
 - **Another provider** (GitLab, Linear) — add a collector under `ingest/` producing the
   same records and a branch in `sync.ts`. Nothing else changes.
@@ -144,6 +169,17 @@ later, not the things it does now.
   your behalf shows up as commits, not as a landed pull request.
 - **`gh` search is rate-limited** to roughly 30 queries a minute. Sync makes two per
   repository and runs them sequentially.
+- **Linear only syncs issues assigned to you** that were updated since
+  `sync.sinceDays`. Without `LINEAR_API_KEY` the Linear section is empty and the
+  sync warns rather than fails; pass `--no-linear` to silence even that.
+- **Links need an explicit issue key.** A pull request links when its title or
+  source branch names a synced issue (`BOS-2422` in either, case-insensitive);
+  a commit links through its subject or as the squash commit of a linked PR.
+  Mentions of unknown identifiers never link, and pull requests synced before
+  this slice have no branch stored, so they link on title alone until resynced.
+- **Per-issue contributions are window-scoped.** A completed issue lists the
+  landed PRs and authored commits from the same dashboard window that named it;
+  work outside the window does not appear under it.
 
 ## Development
 

@@ -48,6 +48,7 @@ export interface PullRequestRow {
   readonly additions: number;
   readonly deletions: number;
   readonly changed_files: number;
+  readonly head_ref: string | null;
   readonly merge_commit_sha: string | null;
   readonly source_id: string;
   readonly source_url: string | null;
@@ -61,6 +62,22 @@ export interface ReviewRow {
   readonly state: string;
   readonly submitted_at: string;
   readonly submitted_at_ms: number;
+  readonly source_url: string | null;
+}
+
+export interface LinearIssueRow {
+  readonly identifier: string;
+  readonly title: string;
+  readonly state_name: string;
+  readonly state_type: string;
+  readonly created_at: string;
+  readonly created_at_ms: number;
+  readonly updated_at: string;
+  readonly updated_at_ms: number;
+  readonly completed_at: string | null;
+  readonly completed_at_ms: number | null;
+  readonly team_key: string | null;
+  readonly source_id: string;
   readonly source_url: string | null;
 }
 
@@ -104,7 +121,7 @@ const PR_COLUMNS = `
   r.slug AS repository_slug,
   p.number, p.title, p.state, p.is_draft, p.author_login,
   p.created_at, p.created_at_ms, p.merged_at, p.merged_at_ms,
-  p.additions, p.deletions, p.changed_files, p.merge_commit_sha,
+  p.additions, p.deletions, p.changed_files, p.head_ref, p.merge_commit_sha,
   p.source_id, p.source_url`;
 
 /**
@@ -235,6 +252,45 @@ export function readLastSyncRun(db: Db): SyncRunRow | null {
     .prepare("SELECT * FROM sync_run ORDER BY id DESC LIMIT 1")
     .get() as unknown as SyncRunRow | undefined;
   return row ?? null;
+}
+
+/**
+ * Every synced Linear issue, for joining pull requests and commits against.
+ * Volume is one developer's assigned issues, so a full scan is cheap and keeps
+ * links consistent: a PR only counts as linked when its identifier is in this set.
+ */
+export function readLinearIssues(db: Db): LinearIssueRow[] {
+  try {
+    return db
+      .prepare(
+        `SELECT identifier, title, state_name, state_type,
+                created_at, created_at_ms, updated_at, updated_at_ms,
+                completed_at, completed_at_ms, team_key, source_id, source_url
+         FROM linear_issue ORDER BY identifier`,
+      )
+      .all() as unknown as LinearIssueRow[];
+  } catch {
+    return [];
+  }
+}
+
+/** Completed issues whose completion falls inside the dashboard window. */
+export function readLinearIssuesCompleted(db: Db, range: TimeRange): LinearIssueRow[] {
+  try {
+    return db
+      .prepare(
+        `SELECT identifier, title, state_name, state_type,
+                created_at, created_at_ms, updated_at, updated_at_ms,
+                completed_at, completed_at_ms, team_key, source_id, source_url
+         FROM linear_issue
+         WHERE completed_at_ms IS NOT NULL
+           AND completed_at_ms >= ? AND completed_at_ms <= ?
+         ORDER BY completed_at_ms DESC, identifier`,
+      )
+      .all(range.fromMs, range.toMs) as unknown as LinearIssueRow[];
+  } catch {
+    return [];
+  }
 }
 
 function placeholders(count: number): string {

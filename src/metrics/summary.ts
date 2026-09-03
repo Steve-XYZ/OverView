@@ -9,10 +9,18 @@
 
 import type { Identity } from "../domain/types.ts";
 import { MS_PER_HOUR, localDayKey } from "../domain/time.ts";
+import {
+  linkCommit,
+  linkPullRequest,
+  type CommitLinkEvidence,
+  type PullRequestLinkEvidence,
+} from "../domain/linear.ts";
 import type { Db } from "../store/db.ts";
 import {
   readCommitsAuthored,
   readLastSyncRun,
+  readLinearIssues,
+  readLinearIssuesCompleted,
   readPullRequestTitles,
   readPullRequestsMerged,
   readPullRequestsOpened,
@@ -77,6 +85,39 @@ export interface RepositoryStatus {
   readonly pullRequestsMerged: number;
 }
 
+export interface LinearLinkedPullRequest {
+  readonly repository: string;
+  readonly number: number;
+  readonly title: string;
+  readonly mergedAt: string;
+  readonly url: string | null;
+  /** Which PR field named the issue. Retained so a link can be checked by hand. */
+  readonly via: readonly PullRequestLinkEvidence[];
+}
+
+export interface LinearLinkedCommit {
+  readonly repository: string;
+  readonly sha: string;
+  readonly shortSha: string;
+  readonly subject: string;
+  readonly authoredAt: string;
+  readonly url: string | null;
+  /** `commit_subject` when the subject names the issue, `pr_merge_commit` when the
+   * commit is the squash commit of a linked PR whose subject does not. */
+  readonly via: CommitLinkEvidence;
+}
+
+export interface LinearCompletedIssue {
+  readonly identifier: string;
+  readonly title: string;
+  readonly state: string;
+  readonly completedAt: string;
+  readonly url: string | null;
+  readonly teamKey: string | null;
+  readonly pullRequests: readonly LinearLinkedPullRequest[];
+  readonly commits: readonly LinearLinkedCommit[];
+}
+
 export interface ActivitySummary {
   readonly generatedAt: string;
   readonly window: {
@@ -113,6 +154,15 @@ export interface ActivitySummary {
   readonly recentCommits: readonly CommitEntry[];
   readonly recentReviews: readonly ReviewEntry[];
   readonly repositories: readonly RepositoryStatus[];
+  readonly linear: {
+    readonly completedIssues: readonly LinearCompletedIssue[];
+    readonly coverage: {
+      readonly landedPullRequests: number;
+      readonly linkedPullRequests: number;
+      readonly unlinkedPullRequests: number;
+      readonly linkedShare: number | null;
+    };
+  };
   readonly sync: {
     readonly lastRunAt: string | null;
     readonly status: string | null;
@@ -144,6 +194,7 @@ export function buildSummary(db: Db, window: MetricWindow, identity: Identity): 
   const daily = buildDaily(window, authoredCommits, merged, reviews);
   const reviewTitles = readPullRequestTitles(db, reviews.map((r) => r.pull_request_source_id));
   const repositories = buildRepositoryStatus(db, range, identity, merged);
+  const linear = buildLinearSection(db, range, merged, authoredCommits);
 
   return {
     generatedAt: new Date().toISOString(),
@@ -208,6 +259,7 @@ export function buildSummary(db: Db, window: MetricWindow, identity: Identity): 
       url: review.source_url,
     })),
     repositories,
+    linear,
     sync: buildSyncStatus(db),
     warnings: buildWarnings(
       identity,
@@ -282,6 +334,127 @@ function buildSyncStatus(db: Db): ActivitySummary["sync"] {
   const run = readLastSyncRun(db);
   if (run === null) return { lastRunAt: null, status: null, since: null };
   return { lastRunAt: run.finished_at ?? run.started_at, status: run.status, since: run.since };
+}
+
+/**
+ * Completed Linear issues in the window, each with the window's PRs and commits
+ * that named it. Links are deterministic: a PR counts when its title or source
+ * branch names a synced issue, a commit counts when its subject names one or it
+ * is the squash commit of such a PR. Only identifiers already in the database
+ * link, so a typo like `BOS-99999` never creates a phantom issue.
+ */
+function buildLinearSection(
+  db: Db,
+  range: { readonly fromMs: number; readonly toMs: number },
+  merged: readonly {
+    readonly repository_key: string;
+    readonly repository_slug: string | null;
+    readonly number: number;
+    readonly title: string;
+    readonly merged_at: string | null;
+    readonly head_ref: string | null;
+    readonly merge_commit_sha: string | null;
+    readonly source_url: string | null;
+  }[],
+  authoredCommits: readonly {
+    readonly repository_key: string;
+    readonly repository_slug: string | null;
+    readonly sha: string;
+    readonly subject: string;
+    readonly authored_at: string;
+    readonly source_url: string | null;
+  }[],
+): ActivitySummary["linear"] {
+  const known = new Set(readLinearIssues(db).map((issue) => issue.identifier.toUpperCase()));
+  const completed = readLinearIssuesCompleted(db, range);
+
+  const prLinks = merged.map((pr) => ({
+    pr,
+    links: linkPullRequest(pr.title, pr.head_ref, known),
+  }));
+  const linkedPrSource = new Set(
+    prLinks.filter((entry) => entry.links.length > 0).map((entry) => entry.pr),
+  );
+
+  // Squash commits often drop the issue key from their subject. When a commit
+  // is the recorded merge commit of a linked PR, it belongs to the same issues.
+  const mergeShaToIdentifiers = new Map<string, string[]>();
+  for (const entry of prLinks) {
+    const sha = entry.pr.merge_commit_sha;
+    if (sha === null || entry.links.length === 0) continue;
+    const identifiers = entry.links.map((link) => link.identifier);
+    const existing = mergeShaToIdentifiers.get(sha.toLowerCase());
+    if (existing === undefined) mergeShaToIdentifiers.set(sha.toLowerCase(), [...identifiers]);
+    else for (const identifier of identifiers) if (!existing.includes(identifier)) existing.push(identifier);
+  }
+
+  const commitLinks = authoredCommits.map((commit) => {
+    const direct = linkCommit(commit.subject, known).map((link) => ({
+      identifier: link.identifier,
+      via: link.via as CommitLinkEvidence,
+    }));
+    const directIds = new Set(direct.map((link) => link.identifier));
+    const viaMerge = mergeShaToIdentifiers.get(commit.sha.toLowerCase()) ?? [];
+    const extra = viaMerge
+      .filter((identifier) => !directIds.has(identifier))
+      .map((identifier) => ({ identifier, via: "pr_merge_commit" as const }));
+    return { commit, links: [...direct, ...extra] };
+  });
+
+  const prsByIssue = new Map<string, LinearLinkedPullRequest[]>();
+  for (const entry of prLinks) {
+    for (const link of entry.links) {
+      const list = prsByIssue.get(link.identifier) ?? [];
+      list.push({
+        repository: entry.pr.repository_slug ?? entry.pr.repository_key,
+        number: entry.pr.number,
+        title: entry.pr.title,
+        mergedAt: entry.pr.merged_at ?? "",
+        url: entry.pr.source_url,
+        via: link.via,
+      });
+      prsByIssue.set(link.identifier, list);
+    }
+  }
+
+  const commitsByIssue = new Map<string, LinearLinkedCommit[]>();
+  for (const entry of commitLinks) {
+    for (const link of entry.links) {
+      const list = commitsByIssue.get(link.identifier) ?? [];
+      list.push({
+        repository: entry.commit.repository_slug ?? entry.commit.repository_key,
+        sha: entry.commit.sha,
+        shortSha: entry.commit.sha.slice(0, 8),
+        subject: entry.commit.subject,
+        authoredAt: entry.commit.authored_at,
+        url: entry.commit.source_url,
+        via: link.via,
+      });
+      commitsByIssue.set(link.identifier, list);
+    }
+  }
+
+  const completedIssues: LinearCompletedIssue[] = completed.slice(0, MAX_TABLE_ROWS).map((issue) => ({
+    identifier: issue.identifier,
+    title: issue.title,
+    state: issue.state_name,
+    completedAt: issue.completed_at ?? "",
+    url: issue.source_url,
+    teamKey: issue.team_key,
+    pullRequests: prsByIssue.get(issue.identifier) ?? [],
+    commits: commitsByIssue.get(issue.identifier) ?? [],
+  }));
+
+  const linkedPullRequests = linkedPrSource.size;
+  return {
+    completedIssues,
+    coverage: {
+      landedPullRequests: merged.length,
+      linkedPullRequests,
+      unlinkedPullRequests: merged.length - linkedPullRequests,
+      linkedShare: merged.length === 0 ? null : linkedPullRequests / merged.length,
+    },
+  };
 }
 
 function buildWarnings(
@@ -365,4 +538,13 @@ const DEFINITIONS: Readonly<Record<string, string>> = {
   mergeTimeHours:
     "Hours from pull request creation to merge, for pull requests you opened that merged " +
     "in the window. Median and p75, never a mean: the distribution has a long tail.",
+  linearCompleted:
+    "Linear issues assigned to you, counted on the day they entered a completed state. " +
+    "Only issues synced via LINEAR_API_KEY appear; open or canceled issues do not.",
+  linearCoverage:
+    "Share of your landed pull requests in the window whose title or source branch names " +
+    "a synced Linear issue (for example BOS-2422). A pull request only counts as linked " +
+    "when the identifier matches an issue already in the database; each link keeps whether " +
+    "it came from the title or the branch. Commits link the same way through their subject, " +
+    "or as the squash commit of a linked pull request.",
 };
