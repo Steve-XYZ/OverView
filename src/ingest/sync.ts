@@ -16,6 +16,7 @@ import {
   finishSyncRun,
   startSyncRun,
   upsertCommits,
+  upsertLinearIssues,
   upsertPullRequests,
   upsertRepository,
   upsertReviews,
@@ -24,6 +25,8 @@ import { MS_PER_DAY } from "../domain/time.ts";
 import { collectFromGit } from "./git/collect.ts";
 import { collectFromGithub } from "./github/collect.ts";
 import { ghAuthenticated, ghAvailable, viewerLogin } from "./github/ghCli.ts";
+import { collectFromLinear } from "./linear/collect.ts";
+import { LINEAR_API_KEY_ENV, linearApiKey } from "./linear/linearApi.ts";
 
 export interface SyncOptions {
   /** Overrides `config.sync.sinceDays` for this run. */
@@ -31,6 +34,7 @@ export interface SyncOptions {
   /** Substring match against the configured path or slug; syncs only matching repos. */
   readonly only?: string;
   readonly skipGithub?: boolean;
+  readonly skipLinear?: boolean;
   readonly log?: (line: string) => void;
 }
 
@@ -47,6 +51,8 @@ export interface SyncResult {
   readonly sinceIso: string;
   readonly login: string | null;
   readonly repositories: readonly RepoSyncResult[];
+  readonly linearIssues: number;
+  readonly linearError: string | null;
   readonly warnings: readonly string[];
   readonly ok: boolean;
 }
@@ -108,7 +114,9 @@ export async function sync(
     }
   }
 
-  const ok = results.every((result) => result.error === null);
+  const linear = await syncLinear(db, { syncRunId, skipLinear: options.skipLinear, log, warnings });
+
+  const ok = results.every((result) => result.error === null) && linear.error === null;
   finishSyncRun(
     db,
     syncRunId,
@@ -116,7 +124,16 @@ export async function sync(
     JSON.stringify({ repositories: results, warnings }),
   );
 
-  return { syncRunId, sinceIso, login: github, repositories: results, warnings, ok };
+  return {
+    syncRunId,
+    sinceIso,
+    login: github,
+    repositories: results,
+    linearIssues: linear.issues,
+    linearError: linear.error,
+    warnings,
+    ok,
+  };
 }
 
 interface RepoSyncContext {
@@ -221,6 +238,51 @@ function selectRepos(repos: readonly RepoConfig[], only: string | undefined): Re
       repo.path.toLowerCase().includes(needle) ||
       (repo.githubRepo ?? "").toLowerCase().includes(needle),
   );
+}
+
+/**
+ * Sync the developer's assigned Linear issues. Global, not per repository, and
+ * independent of the git/GitHub collectors above: it only needs the API key
+ * from the environment. It fetches everything currently assigned — no recency
+ * window — so a fresh database still links a landed PR to its older issue;
+ * the dashboard windows the completed issues itself. A missing key skips with
+ * a warning; a failed request fails the run but keeps whatever git/GitHub synced.
+ */
+async function syncLinear(
+  db: Db,
+  context: {
+    readonly syncRunId: number;
+    readonly skipLinear: boolean | undefined;
+    readonly log: (line: string) => void;
+    readonly warnings: string[];
+  },
+): Promise<{ issues: number; error: string | null }> {
+  if (context.skipLinear === true) return { issues: 0, error: null };
+  const apiKey = linearApiKey();
+  if (apiKey === null) {
+    context.warnings.push(
+      `No Linear API key (${LINEAR_API_KEY_ENV} is unset), so Linear issues are not synced. ` +
+        `Set it to a personal API key to answer what work your activity belonged to.`,
+    );
+    return { issues: 0, error: null };
+  }
+  try {
+    const collected = await collectFromLinear({
+      apiKey,
+      syncRunId: context.syncRunId,
+    });
+    context.warnings.push(...collected.warnings);
+    transaction(db, () => {
+      upsertLinearIssues(db, collected.issues);
+    });
+    context.log(`  ${collected.issues.length} Linear issues assigned to you`);
+    return { issues: collected.issues.length, error: null };
+  } catch (error) {
+    const reason = message(error);
+    context.log(`  Linear sync failed: ${reason}`);
+    context.warnings.push(`Linear sync failed: ${reason}`);
+    return { issues: 0, error: reason };
+  }
 }
 
 /** Decide which GitHub login to sync as, or null when GitHub is unavailable. */

@@ -47,6 +47,7 @@ const PR_FIELDS = `
   deletions
   changedFiles
   baseRefName
+  headRefName
   mergeCommit { oid }
   author { login }
   repository { nameWithOwner }`;
@@ -91,6 +92,7 @@ interface SearchNode {
   readonly deletions?: number;
   readonly changedFiles?: number;
   readonly baseRefName?: string | null;
+  readonly headRefName?: string | null;
   readonly mergeCommit?: { oid: string } | null;
   readonly author?: { login: string } | null;
   readonly repository?: { nameWithOwner: string } | null;
@@ -225,6 +227,7 @@ function toPullRequest(
     deletions: node.deletions ?? 0,
     changedFiles: node.changedFiles ?? 0,
     baseRef: node.baseRefName ?? null,
+    headRef: node.headRefName ?? null,
     mergeCommitSha: node.mergeCommit?.oid ?? null,
     provenance,
   };

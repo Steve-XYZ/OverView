@@ -3,6 +3,7 @@
 import type {
   CommitRecord,
   Identity,
+  LinearIssueRecord,
   Provenance,
   PullRequestRecord,
   RepositoryRecord,
@@ -12,6 +13,7 @@ import { openDatabase, type Db } from "../../src/store/db.ts";
 import {
   startSyncRun,
   upsertCommits,
+  upsertLinearIssues,
   upsertPullRequests,
   upsertRepository,
   upsertReviews,
@@ -91,15 +93,18 @@ export function pullRequest(options: {
   id: string;
   number: number;
   login?: string;
+  title?: string;
   createdAt: string;
   mergedAt?: string;
+  headRef?: string | null;
+  mergeCommitSha?: string | null;
   syncRunId: number;
 }): PullRequestRecord {
   const merged = options.mergedAt !== undefined;
   return {
     repositoryKey: REPO_KEY,
     number: options.number,
-    title: `Pull request ${options.number}`,
+    title: options.title ?? `Pull request ${options.number}`,
     state: merged ? "MERGED" : "OPEN",
     isDraft: false,
     authorLogin: options.login ?? "ada",
@@ -111,7 +116,13 @@ export function pullRequest(options: {
     deletions: 5,
     changedFiles: 3,
     baseRef: "main",
-    mergeCommitSha: merged ? `merge${options.number}` : null,
+    headRef: options.headRef ?? null,
+    mergeCommitSha:
+      options.mergeCommitSha !== undefined
+        ? options.mergeCommitSha
+        : merged
+          ? `merge${options.number}`
+          : null,
     provenance: provenance(options.id, options.syncRunId),
   };
 }
@@ -135,6 +146,38 @@ export function review(options: {
   };
 }
 
+export function linearIssue(options: {
+  id: string;
+  identifier: string;
+  title?: string;
+  stateName?: string;
+  stateType?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  completedAt?: string | null;
+  teamKey?: string | null;
+  syncRunId: number;
+}): LinearIssueRecord {
+  const completed = options.completedAt ?? null;
+  return {
+    identifier: options.identifier.toUpperCase(),
+    title: options.title ?? `Issue ${options.identifier}`,
+    stateName: options.stateName ?? (completed === null ? "In Progress" : "Done"),
+    stateType: options.stateType ?? (completed === null ? "started" : "completed"),
+    createdAt: options.createdAt ?? "2026-08-01T00:00:00Z",
+    updatedAt: options.updatedAt ?? completed ?? "2026-09-01T00:00:00Z",
+    completedAt: completed,
+    teamKey: options.teamKey ?? "BOS",
+    provenance: {
+      sourceSystem: "linear",
+      sourceId: options.id,
+      sourceUrl: `https://linear.app/acme/issue/${options.identifier}`,
+      recordedAt: "2026-09-03T12:00:00.000Z",
+      syncRunId: options.syncRunId,
+    },
+  };
+}
+
 export interface SeededDb {
   readonly db: Db;
   readonly syncRunId: number;
@@ -154,9 +197,11 @@ export function writeAll(
     commits?: CommitRecord[];
     pullRequests?: PullRequestRecord[];
     reviews?: ReviewRecord[];
+    linearIssues?: LinearIssueRecord[];
   },
 ): void {
   upsertCommits(seeded.db, seeded.repositoryId, data.commits ?? []);
   upsertPullRequests(seeded.db, seeded.repositoryId, data.pullRequests ?? []);
   upsertReviews(seeded.db, seeded.repositoryId, data.reviews ?? []);
+  upsertLinearIssues(seeded.db, data.linearIssues ?? []);
 }

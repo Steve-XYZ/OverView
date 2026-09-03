@@ -10,7 +10,7 @@
  * rather than a new model.
  */
 
-export type SourceSystem = "git" | "github";
+export type SourceSystem = "git" | "github" | "linear";
 
 export interface Provenance {
   /** Which collector produced the record. */
@@ -93,6 +93,8 @@ export interface PullRequestRecord {
   readonly deletions: number;
   readonly changedFiles: number;
   readonly baseRef: string | null;
+  /** Source branch the pull request was opened from, e.g. `bos-2422-fix`. Null for old rows. */
+  readonly headRef: string | null;
   readonly mergeCommitSha: string | null;
   readonly provenance: Provenance;
 }
@@ -112,6 +114,29 @@ export interface ReviewRecord {
   readonly reviewerLogin: string;
   readonly state: ReviewState;
   readonly submittedAt: string;
+  readonly provenance: Provenance;
+}
+
+/**
+ * A Linear issue assigned to the developer.
+ *
+ * Linear issues are workspace-global, not per repository, so there is no
+ * `repositoryKey`. The `identifier` (e.g. `BOS-2422`) is the human key engineers
+ * already put in branch names and pull request titles; it is the join key the
+ * dashboard uses to answer "what work did this activity belong to".
+ */
+export interface LinearIssueRecord {
+  /** Normalised to upper case (`bos-2422` becomes `BOS-2422`). */
+  readonly identifier: string;
+  readonly title: string;
+  readonly stateName: string;
+  /** Linear workflow category: `completed`, `canceled`, `started`, etc. */
+  readonly stateType: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  /** Set when the issue entered a completed state. Null until then. */
+  readonly completedAt: string | null;
+  readonly teamKey: string | null;
   readonly provenance: Provenance;
 }
 

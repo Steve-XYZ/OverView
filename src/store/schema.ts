@@ -129,4 +129,33 @@ CREATE INDEX review_submitted_idx ON review (submitted_at_ms);
 CREATE INDEX review_reviewer_idx  ON review (reviewer_login);
 `,
   },
+  {
+    name: "0002_linear",
+    sql: `
+ALTER TABLE pull_request ADD COLUMN head_ref TEXT;
+
+CREATE TABLE linear_issue (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  identifier     TEXT    NOT NULL UNIQUE,
+  title          TEXT    NOT NULL,
+  state_name     TEXT    NOT NULL,
+  state_type     TEXT    NOT NULL,
+  created_at     TEXT    NOT NULL,
+  created_at_ms  INTEGER NOT NULL,
+  updated_at     TEXT    NOT NULL,
+  updated_at_ms  INTEGER NOT NULL,
+  completed_at   TEXT,
+  completed_at_ms INTEGER,
+  team_key       TEXT,
+  source_system  TEXT    NOT NULL,
+  source_id      TEXT    NOT NULL UNIQUE,
+  source_url     TEXT,
+  recorded_at    TEXT    NOT NULL,
+  sync_run_id    INTEGER NOT NULL REFERENCES sync_run(id)
+);
+
+CREATE INDEX linear_issue_completed_idx ON linear_issue (completed_at_ms);
+CREATE INDEX linear_issue_identifier_idx ON linear_issue (identifier);
+`,
+  },
 ];
