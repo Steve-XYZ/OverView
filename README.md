@@ -1,0 +1,157 @@
+# Overview
+
+A local-first dashboard that answers one question accurately: **what did I ship in the
+last 7, 30 or 90 days?**
+
+It reads your local git checkouts and the GitHub CLI you have already authenticated,
+stores the result in a SQLite file on your machine, and serves one page on the
+loopback interface. Nothing leaves the machine and no credential is stored.
+
+## Requirements
+
+- Node 24 or newer (for `node:sqlite` and native TypeScript execution)
+- `git`
+- `gh`, authenticated (`gh auth login`) — optional; without it you get commits only
+
+Zero runtime dependencies. TypeScript 7 is the only devDependency.
+
+## Quick start
+
+```bash
+npm install
+npm run build
+
+node dist/cli.js init --repo ~/src/one-repo --repo ~/src/another
+node dist/cli.js sync
+node dist/cli.js report --days 30
+node dist/cli.js serve            # http://127.0.0.1:4317
+```
+
+`init` detects your GitHub login from `gh` and your commit emails from git config.
+**Check `identity.gitEmails` before trusting any number** — it is the single largest
+source of wrong counts. If you commit under a work address, a personal address and a
+GitHub noreply address, all three belong in that list.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `init [--repo <path>]...` | Write `overview.config.json`, detecting identity |
+| `repo add <path> [--github owner/name] [--branch main]` | Add a repository |
+| `repo list` | Show what is configured |
+| `sync [--days N] [--only <text>] [--no-github]` | Ingest into the local database |
+| `report [--days N] [--json]` | Print the metrics |
+| `serve [--port N] [--host H]` | Serve the dashboard |
+
+`sync` is idempotent. Every record is upserted on the source's own identifier, so
+re-running over an overlapping window updates rows rather than duplicating them.
+
+## What the numbers mean
+
+Precision here matters more than breadth, so each metric states its rule. The
+dashboard repeats these definitions at the bottom of the page.
+
+- **Commits landed** — non-merge commits you authored that are reachable from the
+  repository's default branch, counted by **committer date**: when the work reached the
+  branch. Merge commits are excluded; they carry no authored change and would
+  double-count the branch they merge.
+- **Active days** — local calendar days with at least one commit you **authored** (by
+  author date, which survives a rebase), pull request you opened or landed, or review
+  you submitted.
+- **Pull requests opened / landed** — counted on creation date and merge date
+  respectively, for pull requests **you** opened. The two are deliberately separate:
+  a pull request opened in July and merged yesterday counts as landed, not opened.
+- **Reviews given** — review submissions by you. Two rounds on one pull request count
+  as two reviews; the tile's subtitle shows the distinct pull requests.
+- **Change volume** — added and deleted lines over the counted commits, after removing
+  paths matching `excludePaths`. Removed churn is reported in its own tile rather than
+  discarded, so a lockfile refresh never inflates the number and never disappears
+  silently either.
+- **Time to merge** — hours from creation to merge, reported as **median and p75, never
+  a mean**. The distribution has a long tail; one pull request that sat over a holiday
+  would drag a mean away from anything you experienced.
+
+A window of N days is the N local calendar days ending today, today included, so
+"17 / 30 active days" compares like with like. Bucketing uses your local zone, not UTC.
+
+## Provenance
+
+Every stored record carries `source_system`, `source_id` (a commit sha or GitHub node
+id), `source_url`, `recorded_at` and the `sync_run_id` that fetched it. The
+`repository` table records the ref actually walked and the head it saw, so a stale
+`origin/main` is visible rather than silent. The `sync_run` table keeps one row per
+run with its counts and warnings.
+
+That means any figure on the dashboard can be reconstructed from the database:
+
+```sql
+-- Which commits produced "commits landed" for the last 7 days?
+SELECT r.slug, c.sha, c.committed_at, c.subject, c.source_url
+FROM commit_event c JOIN repository r ON r.id = c.repository_id
+WHERE c.is_merge = 0
+  AND c.author_email IN ('you@example.com')
+  AND c.committed_at_ms >= (unixepoch('now', '-7 days') * 1000)
+ORDER BY c.committed_at_ms DESC;
+```
+
+## Layout
+
+```
+src/
+  domain/     Provider-neutral records and time helpers. Depends on nothing.
+  config/     Load and validate overview.config.json.
+  ingest/
+    git/      Local checkout -> CommitRecord. Knows git; knows no SQL.
+    github/   `gh api graphql` -> PullRequestRecord, ReviewRecord.
+    sync.ts   Decides what to run and hands records to the write layer.
+  store/      SQLite. writes.ts is the only path in; reads.ts the only path out.
+  metrics/    Windows, statistics, and the summary the dashboard eats.
+  server/     Loopback HTTP: /api/summary and the static page.
+  web/        The dashboard. Its only contract is the ActivitySummary JSON.
+```
+
+The boundaries are one-directional: `ingest` and `metrics` both depend on `domain` and
+`store`, never on each other; `web` depends only on the JSON shape. That is what makes
+the likely next steps additive rather than a rewrite:
+
+- **Another provider** (GitLab, Linear) — add a collector under `ingest/` producing the
+  same records and a branch in `sync.ts`. Nothing else changes.
+- **Postgres** — reimplement `store/writes.ts` and `store/reads.ts` against a new
+  driver. `metrics/` consumes rows, not a connection.
+- **A hosted dashboard** — put a real server in front of `buildSummary`. The page
+  already talks to it over JSON.
+- **A GitHub App instead of `gh`** — replace `ingest/github/ghCli.ts`. The collector
+  above it parses GraphQL responses, not CLI output.
+
+None of that is built or stubbed. There is no plugin system, no queue, no metric
+registry and no tenancy — those are the things this design is meant to make cheap
+later, not the things it does now.
+
+## Known limits
+
+- **Reviews and pull requests only come from configured repositories.** A review you
+  gave on a repository you have not added is invisible.
+- **GitHub search caps at 1000 results per query.** The sync warns when it hits the cap.
+- **A local checkout can be stale.** By default nothing touches the network for git;
+  set `sync.fetchBeforeSync` to `true` to fetch first. The dashboard shows the ref and
+  head it walked so you can tell.
+- **An initial import inflates change volume.** A first commit of 14,000 lines is
+  counted as 14,000 lines, because that is what happened.
+- **Only pull requests you opened count as landed.** Work merged by someone else on
+  your behalf shows up as commits, not as a landed pull request.
+- **`gh` search is rate-limited** to roughly 30 queries a minute. Sync makes two per
+  repository and runs them sequentially.
+
+## Development
+
+```bash
+npm run typecheck     # tsc over src and test
+npm test              # node:test, no build required
+npm run check         # both
+npm run build         # tsc + copy the page assets into dist/web
+node src/cli.ts sync  # run from source via Node's TypeScript support
+```
+
+Source runs unbuilt because the code stays inside erasable TypeScript syntax
+(`erasableSyntaxOnly`), which Node can strip without a compiler. The browser still
+needs real JavaScript, so `serve` looks for `dist/` and says so when it is missing.

@@ -1,0 +1,22 @@
+{
+  "identity": {
+    "githubLogin": "your-login",
+    "gitEmails": ["you@example.com", "1234567+you@users.noreply.github.com"]
+  },
+  "repositories": [
+    { "path": "/absolute/path/to/checkout" },
+    { "path": "~/src/other-repo", "githubRepo": "owner/other-repo", "defaultBranch": "main" }
+  ],
+  "sync": {
+    "sinceDays": 180,
+    "fetchBeforeSync": false
+  },
+  "excludePaths": [
+    "**/package-lock.json",
+    "**/pnpm-lock.yaml",
+    "**/dist/**",
+    "**/*.generated.*"
+  ],
+  "database": ".overview/overview.db",
+  "server": { "port": 4317, "host": "127.0.0.1" }
+}

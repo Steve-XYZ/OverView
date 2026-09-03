@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Overview — what I shipped</title>
+    <link rel="stylesheet" href="/web/styles.css" />
+    <link rel="icon" href="data:," />
+  </head>
+  <body class="viz-root">
+    <header class="masthead">
+      <div>
+        <h1>What I shipped</h1>
+        <p class="masthead-sub" id="scope-line">Loading…</p>
+      </div>
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Switch colour theme">
+        Theme
+      </button>
+    </header>
+
+    <div class="filters" role="group" aria-label="Time range">
+      <span class="filters-label">Range</span>
+      <div class="segmented" id="range-control"></div>
+      <span class="filters-meta" id="sync-line"></span>
+    </div>
+
+    <main id="main" aria-busy="true">
+      <section class="hero-card card" aria-labelledby="hero-label">
+        <p class="stat-label" id="hero-label">Pull requests landed</p>
+        <p class="hero-figure" id="hero-value">—</p>
+        <p class="stat-note" id="hero-note"></p>
+      </section>
+
+      <section class="kpi-row" id="kpi-row" aria-label="Headline metrics"></section>
+
+      <section class="card chart-card" aria-labelledby="chart-title">
+        <div class="card-head">
+          <div>
+            <h2 id="chart-title">Activity by day</h2>
+            <p class="card-sub" id="chart-sub"></p>
+          </div>
+          <div class="view-toggle" role="group" aria-label="Chart view">
+            <button type="button" data-view="chart" class="is-selected">Chart</button>
+            <button type="button" data-view="table">Table</button>
+          </div>
+        </div>
+        <div class="legend" id="chart-legend"></div>
+        <div class="chart-holder" id="chart-holder"></div>
+        <div class="table-holder is-hidden" id="chart-table"></div>
+      </section>
+
+      <section class="card" aria-labelledby="prs-title">
+        <div class="card-head">
+          <h2 id="prs-title">Landed pull requests</h2>
+          <p class="card-sub" id="prs-sub"></p>
+        </div>
+        <div class="table-holder" id="prs-table"></div>
+      </section>
+
+      <div class="split">
+        <section class="card" aria-labelledby="commits-title">
+          <div class="card-head">
+            <h2 id="commits-title">Recent commits</h2>
+            <p class="card-sub" id="commits-sub"></p>
+          </div>
+          <div class="table-holder" id="commits-table"></div>
+        </section>
+
+        <section class="card" aria-labelledby="reviews-title">
+          <div class="card-head">
+            <h2 id="reviews-title">Reviews given</h2>
+            <p class="card-sub" id="reviews-sub"></p>
+          </div>
+          <div class="table-holder" id="reviews-table"></div>
+        </section>
+      </div>
+
+      <section class="card" aria-labelledby="repos-title">
+        <div class="card-head">
+          <h2 id="repos-title">Sources</h2>
+          <p class="card-sub">
+            Every figure above traces to these refs and to the commit, pull request and review
+            records stored underneath them.
+          </p>
+        </div>
+        <div class="table-holder" id="repos-table"></div>
+      </section>
+
+      <section class="card definitions" aria-labelledby="defs-title">
+        <div class="card-head"><h2 id="defs-title">What these numbers count</h2></div>
+        <dl id="definitions"></dl>
+      </section>
+    </main>
+
+    <div class="tooltip" id="tooltip" role="status" aria-live="polite" hidden></div>
+    <p class="warnings" id="warnings"></p>
+
+    <script type="module" src="/web/app.js"></script>
+  </body>
+</html>

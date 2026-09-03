@@ -1,0 +1,28 @@
+{
+  "name": "overview",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local-first personal engineering activity dashboard",
+  "bin": {
+    "overview": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.js",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "watch": "tsc -p tsconfig.json --watch",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "overview": "node src/cli.ts",
+    "sync": "node src/cli.ts sync",
+    "serve": "node src/cli.ts serve",
+    "report": "node src/cli.ts report",
+    "check": "npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "typescript": "7.0.2"
+  }
+}
