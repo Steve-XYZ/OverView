@@ -1,6 +1,7 @@
 /** Terminal rendering of a summary, so the numbers are checkable without a browser. */
 
 import type { ActivitySummary } from "../metrics/summary.ts";
+import { localDayKey } from "../domain/time.ts";
 
 export function renderTextReport(summary: ActivitySummary): string {
   const lines: string[] = [];
@@ -38,10 +39,13 @@ export function renderTextReport(summary: ActivitySummary): string {
   lines.push("");
 
   if (summary.landedPullRequests.length > 0) {
-    lines.push(`Landed pull requests (${summary.totals.pullRequestsMerged})`);
+    lines.push(
+      `Landed pull requests (showing ${summary.landedPullRequests.length} of ` +
+        `${summary.totals.pullRequestsMerged}; lines include excludePaths)`,
+    );
     for (const pr of summary.landedPullRequests) {
       lines.push(
-        `  ${pr.mergedAt.slice(0, 10)}  ${pr.repository}#${pr.number}  ` +
+        `  ${formatLocalDay(pr.mergedAt, summary.window.timeZone)}  ${pr.repository}#${pr.number}  ` +
           `${truncate(pr.title, 58)}  +${pr.additions}/-${pr.deletions}  ${formatHours(pr.mergeHours)}`,
       );
     }
@@ -52,7 +56,8 @@ export function renderTextReport(summary: ActivitySummary): string {
     lines.push(`Recent commits (showing ${summary.recentCommits.length} of ${t.commitsAuthored})`);
     for (const commit of summary.recentCommits) {
       lines.push(
-        `  ${commit.authoredAt.slice(0, 10)}  ${commit.shortSha}  ${commit.repository}  ` +
+        `  ${formatLocalDay(commit.authoredAt, summary.window.timeZone)}  ` +
+          `${commit.shortSha}  ${commit.repository}  ` +
           `${truncate(commit.subject, 56)}  +${commit.additions}/-${commit.deletions}`,
       );
     }
@@ -63,7 +68,8 @@ export function renderTextReport(summary: ActivitySummary): string {
     lines.push(`Reviews given (showing ${summary.recentReviews.length} of ${t.reviewsGiven})`);
     for (const review of summary.recentReviews) {
       lines.push(
-        `  ${review.submittedAt.slice(0, 10)}  ${review.repository}#${review.pullRequestNumber}  ` +
+        `  ${formatLocalDay(review.submittedAt, summary.window.timeZone)}  ` +
+          `${review.repository}#${review.pullRequestNumber}  ` +
           `${review.state.toLowerCase().replace("_", " ")}  ${truncate(review.title, 48)}`,
       );
     }
@@ -73,13 +79,23 @@ export function renderTextReport(summary: ActivitySummary): string {
   const coverage = summary.linear.coverage;
   const share =
     coverage.linkedShare === null ? "—" : `${Math.round(coverage.linkedShare * 100)}%`;
-  lines.push(
-    `Linear completed (${summary.linear.completedIssues.length})  ` +
-      `PR coverage ${coverage.linkedPullRequests}/${coverage.landedPullRequests} linked (${share})`,
-  );
+  if (summary.linear.syncStatus === "synced") {
+    lines.push(
+      `Linear completed (showing ${summary.linear.completedIssues.length} of ` +
+        `${summary.linear.completedIssuesTotal})  ` +
+        `PR coverage ${coverage.linkedPullRequests}/${coverage.landedPullRequests} linked (${share})`,
+    );
+  } else {
+    lines.push(
+      `Linear unavailable (${linearStatusLabel(summary.linear.syncStatus)}); ` +
+        `${summary.linear.completedIssuesTotal} cached completed issues. ` +
+        "PR coverage is unavailable until a successful Linear sync.",
+    );
+  }
   for (const issue of summary.linear.completedIssues) {
     lines.push(
-      `  ${issue.completedAt.slice(0, 10)}  ${issue.identifier}  ${truncate(issue.title, 52)}`,
+      `  ${formatLocalDay(issue.completedAt, summary.window.timeZone)}  ` +
+        `${issue.identifier}  ${truncate(issue.title, 52)}`,
     );
     for (const pr of issue.pullRequests) {
       lines.push(
@@ -113,6 +129,26 @@ export function renderTextReport(summary: ActivitySummary): string {
   }
 
   return `${lines.join("\n")}\n`;
+}
+
+export function formatLocalDay(iso: string, timeZone: string): string {
+  const timestamp = Date.parse(iso);
+  return Number.isNaN(timestamp) ? iso : localDayKey(timestamp, timeZone);
+}
+
+function linearStatusLabel(status: ActivitySummary["linear"]["syncStatus"]): string {
+  switch (status) {
+    case "missing_key":
+      return "LINEAR_API_KEY was missing on the last sync";
+    case "skipped":
+      return "the last sync skipped Linear";
+    case "failed":
+      return "the last Linear sync failed";
+    case "unknown":
+      return "the last sync predates Linear status tracking";
+    case "synced":
+      return "synced";
+  }
 }
 
 function row(label: string, value: string | number): string {

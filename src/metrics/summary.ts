@@ -118,6 +118,8 @@ export interface LinearCompletedIssue {
   readonly commits: readonly LinearLinkedCommit[];
 }
 
+export type LinearDataStatus = "synced" | "missing_key" | "skipped" | "failed" | "unknown";
+
 export interface ActivitySummary {
   readonly generatedAt: string;
   readonly window: {
@@ -155,6 +157,8 @@ export interface ActivitySummary {
   readonly recentReviews: readonly ReviewEntry[];
   readonly repositories: readonly RepositoryStatus[];
   readonly linear: {
+    readonly syncStatus: LinearDataStatus;
+    readonly completedIssuesTotal: number;
     readonly completedIssues: readonly LinearCompletedIssue[];
     readonly coverage: {
       readonly landedPullRequests: number;
@@ -447,6 +451,8 @@ function buildLinearSection(
 
   const linkedPullRequests = linkedPrSource.size;
   return {
+    syncStatus: readLinearSyncStatus(db),
+    completedIssuesTotal: completed.length,
     completedIssues,
     coverage: {
       landedPullRequests: merged.length,
@@ -455,6 +461,22 @@ function buildLinearSection(
       linkedShare: merged.length === 0 ? null : linkedPullRequests / merged.length,
     },
   };
+}
+
+function readLinearSyncStatus(db: Db): LinearDataStatus {
+  const notes = readLastSyncRun(db)?.notes;
+  if (notes === null || notes === undefined) return "unknown";
+  try {
+    const status = (JSON.parse(notes) as { linear?: { status?: unknown } }).linear?.status;
+    return status === "synced" ||
+      status === "missing_key" ||
+      status === "skipped" ||
+      status === "failed"
+      ? status
+      : "unknown";
+  } catch {
+    return "unknown";
+  }
 }
 
 function buildWarnings(

@@ -53,9 +53,12 @@ export interface SyncResult {
   readonly repositories: readonly RepoSyncResult[];
   readonly linearIssues: number;
   readonly linearError: string | null;
+  readonly linearStatus: LinearSyncStatus;
   readonly warnings: readonly string[];
   readonly ok: boolean;
 }
+
+export type LinearSyncStatus = "synced" | "missing_key" | "skipped" | "failed";
 
 export async function sync(
   db: Db,
@@ -121,7 +124,7 @@ export async function sync(
     db,
     syncRunId,
     ok ? "ok" : "failed",
-    JSON.stringify({ repositories: results, warnings }),
+    JSON.stringify({ repositories: results, linear, warnings }),
   );
 
   return {
@@ -131,6 +134,7 @@ export async function sync(
     repositories: results,
     linearIssues: linear.issues,
     linearError: linear.error,
+    linearStatus: linear.status,
     warnings,
     ok,
   };
@@ -256,15 +260,15 @@ async function syncLinear(
     readonly log: (line: string) => void;
     readonly warnings: string[];
   },
-): Promise<{ issues: number; error: string | null }> {
-  if (context.skipLinear === true) return { issues: 0, error: null };
+): Promise<{ issues: number; error: string | null; status: LinearSyncStatus }> {
+  if (context.skipLinear === true) return { issues: 0, error: null, status: "skipped" };
   const apiKey = linearApiKey();
   if (apiKey === null) {
     context.warnings.push(
       `No Linear API key (${LINEAR_API_KEY_ENV} is unset), so Linear issues are not synced. ` +
         `Set it to a personal API key to answer what work your activity belonged to.`,
     );
-    return { issues: 0, error: null };
+    return { issues: 0, error: null, status: "missing_key" };
   }
   try {
     const collected = await collectFromLinear({
@@ -276,12 +280,12 @@ async function syncLinear(
       upsertLinearIssues(db, collected.issues);
     });
     context.log(`  ${collected.issues.length} Linear issues assigned to you`);
-    return { issues: collected.issues.length, error: null };
+    return { issues: collected.issues.length, error: null, status: "synced" };
   } catch (error) {
     const reason = message(error);
     context.log(`  Linear sync failed: ${reason}`);
     context.warnings.push(`Linear sync failed: ${reason}`);
-    return { issues: 0, error: reason };
+    return { issues: 0, error: reason, status: "failed" };
   }
 }
 

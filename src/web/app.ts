@@ -12,7 +12,7 @@
  */
 
 import type { ActivitySummary, DailyBucket } from "../metrics/summary.ts";
-import { formatHours } from "../report/text.ts";
+import { formatHours, formatLocalDay } from "../report/text.ts";
 
 interface Series {
   readonly key: "commitsAuthored" | "pullRequestsMerged" | "reviewsGiven";
@@ -370,15 +370,17 @@ function renderChartTable(summary: ActivitySummary): void {
 
 function renderPullRequests(summary: ActivitySummary): void {
   const prs = summary.landedPullRequests;
-  byId("prs-sub").textContent = countNote(prs.length, summary.totals.pullRequestsMerged, "merged");
+  const count = countNote(prs.length, summary.totals.pullRequestsMerged, "merged");
+  byId("prs-sub").textContent =
+    count.length === 0 ? "" : `${count} Per-PR lines are GitHub totals before excludePaths.`;
 
   byId("prs-table").replaceChildren(
     prs.length === 0
       ? text("p", "empty", "No pull requests landed in this window.")
       : table(
-          ["Merged", "Pull request", "Time to merge", "Lines", "Files"],
+          ["Merged", "Pull request", "Time to merge", "GitHub diff", "Files"],
           prs.map((pr) => [
-            cell(shortDate(pr.mergedAt.slice(0, 10)), "meta"),
+            cell(shortDate(formatLocalDay(pr.mergedAt, summary.window.timeZone)), "meta"),
             linkCell(`${pr.repository}#${pr.number}`, pr.title, pr.url),
             cell(formatHours(pr.mergeHours), "num"),
             diffCell(pr.additions, pr.deletions),
@@ -392,17 +394,31 @@ function renderLinear(summary: ActivitySummary): void {
   const issues = summary.linear.completedIssues;
   const coverage = summary.linear.coverage;
   const share = coverage.linkedShare === null ? "—" : `${Math.round(coverage.linkedShare * 100)}%`;
-  byId("linear-sub").textContent =
-    issues.length === 0
-      ? `No Linear issues completed in this window · ${coverage.linkedPullRequests}/` +
-        `${coverage.landedPullRequests} landed PRs linked (${share}).`
-      : `${issues.length} completed · ${coverage.linkedPullRequests}/` +
-        `${coverage.landedPullRequests} landed PRs linked (${share}). ` +
-        `A PR counts when its title or branch names a synced issue.`;
+  if (summary.linear.syncStatus === "synced") {
+    const completed = countNote(
+      issues.length,
+      summary.linear.completedIssuesTotal,
+      "completed",
+    );
+    byId("linear-sub").textContent =
+      `${completed || "No Linear issues completed in this window."} ` +
+      `${coverage.linkedPullRequests}/${coverage.landedPullRequests} landed PRs linked ` +
+      `(${share}). A PR counts when its title or branch names a synced issue.`;
+  } else {
+    byId("linear-sub").textContent =
+      `Linear unavailable — ${linearStatusLabel(summary.linear.syncStatus)}. ` +
+      "Any rows below are cached; completion and PR coverage are not current.";
+  }
 
   byId("linear-table").replaceChildren(
     issues.length === 0
-      ? text("p", "empty", "No Linear issues completed in this window.")
+      ? text(
+          "p",
+          "empty",
+          summary.linear.syncStatus === "synced"
+            ? "No Linear issues completed in this window."
+            : "No cached Linear issues completed in this window.",
+        )
       : table(
           ["Completed", "Issue", "Contributed in this window"],
           issues.map((issue) => {
@@ -414,7 +430,7 @@ function renderLinear(summary: ActivitySummary): void {
               contributions.push(`${commit.shortSha} via ${commit.via}`);
             }
             return [
-              cell(shortDate(issue.completedAt.slice(0, 10)), "meta"),
+              cell(shortDate(formatLocalDay(issue.completedAt, summary.window.timeZone)), "meta"),
               linkCell(issue.identifier, issue.title, issue.url),
               cell(
                 contributions.length === 0
@@ -441,7 +457,7 @@ function renderCommits(summary: ActivitySummary): void {  const commits = summar
       : table(
           ["Authored", "Commit", "Lines"],
           commits.map((commit) => [
-            cell(shortDate(commit.authoredAt.slice(0, 10)), "meta"),
+            cell(shortDate(formatLocalDay(commit.authoredAt, summary.window.timeZone)), "meta"),
             linkCell(`${commit.repository} ${commit.shortSha}`, commit.subject, commit.url),
             diffCell(commit.additions, commit.deletions),
           ]),
@@ -463,7 +479,7 @@ function renderReviews(summary: ActivitySummary): void {
       : table(
           ["Given", "Pull request", "Verdict"],
           reviews.map((review) => [
-            cell(shortDate(review.submittedAt.slice(0, 10)), "meta"),
+            cell(shortDate(formatLocalDay(review.submittedAt, summary.window.timeZone)), "meta"),
             linkCell(
               `${review.repository}#${review.pullRequestNumber}`,
               review.title,
@@ -497,7 +513,8 @@ function renderRepositories(summary: ActivitySummary): void {
             cell(
               repo.headCommittedAt === null
                 ? (repo.headSha ?? "").slice(0, 8) || "—"
-                : `${shortDate(repo.headCommittedAt.slice(0, 10))} ${(repo.headSha ?? "").slice(0, 8)}`,
+                : `${shortDate(formatLocalDay(repo.headCommittedAt, summary.window.timeZone))} ` +
+                  `${(repo.headSha ?? "").slice(0, 8)}`,
               "meta mono",
             ),
             cell(`${formatCount(repo.commitsAuthored)} / ${formatCount(repo.commitsObserved)}`, "num"),
@@ -631,6 +648,21 @@ function formatRelative(iso: string): string {
 function countNote(shown: number, total: number, verb: string): string {
   if (total === 0) return "";
   return shown < total ? `Showing ${shown} of ${total} ${verb}.` : `${total} ${verb}.`;
+}
+
+function linearStatusLabel(status: ActivitySummary["linear"]["syncStatus"]): string {
+  switch (status) {
+    case "missing_key":
+      return "LINEAR_API_KEY was missing on the last sync";
+    case "skipped":
+      return "the last sync skipped Linear";
+    case "failed":
+      return "the last Linear sync failed";
+    case "unknown":
+      return "the last sync predates Linear status tracking";
+    case "synced":
+      return "synced";
+  }
 }
 
 function humanise(camel: string): string {
