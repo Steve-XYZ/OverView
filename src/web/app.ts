@@ -15,13 +15,13 @@ import type { ActivitySummary, DailyBucket } from "../metrics/summary.ts";
 import { formatHours } from "../report/text.ts";
 
 interface Series {
-  readonly key: "commitsLanded" | "pullRequestsMerged" | "reviewsGiven";
+  readonly key: "commitsAuthored" | "pullRequestsMerged" | "reviewsGiven";
   readonly label: string;
   readonly color: string;
 }
 
 const SERIES: readonly Series[] = [
-  { key: "commitsLanded", label: "Commits landed", color: "var(--series-1)" },
+  { key: "commitsAuthored", label: "Commits authored", color: "var(--series-1)" },
   { key: "pullRequestsMerged", label: "PRs merged", color: "var(--series-2)" },
   { key: "reviewsGiven", label: "Reviews given", color: "var(--series-3)" },
 ];
@@ -80,7 +80,9 @@ function render(summary: ActivitySummary): void {
 
   byId("scope-line").textContent =
     `${summary.window.startDay} to ${summary.window.endDay} · ${summary.window.timeZone} · ` +
-    `${summary.identity.githubLogin ?? "no GitHub login"}`;
+    `GitHub: ${summary.identity.githubLogin ?? "not configured"} · Git emails: ` +
+    `${summary.identity.gitEmails.join(", ") || "none configured"} · ` +
+    `${summary.repositories.length} ${summary.repositories.length === 1 ? "repository" : "repositories"}`;
 
   byId("sync-line").textContent =
     summary.sync.lastRunAt === null
@@ -114,9 +116,9 @@ function renderKpis(summary: ActivitySummary): void {
   const net = t.additions - t.deletions;
   const tiles: { label: string; value: string; note: string }[] = [
     {
-      label: "Commits landed",
-      value: formatCount(t.commitsLanded),
-      note: "non-merge, on the default branch",
+      label: "Commits authored",
+      value: formatCount(t.commitsAuthored),
+      note: "by author date, non-merge, on the default branch",
     },
     {
       label: "Active days",
@@ -354,7 +356,7 @@ function renderChartTable(summary: ActivitySummary): void {
           ["Day", "Commits", "PRs merged", "Reviews", "Total"],
           rows.map((day) => [
             cell(longDate(day.date)),
-            numberCell(day.commitsLanded),
+            numberCell(day.commitsAuthored),
             numberCell(day.pullRequestsMerged),
             numberCell(day.reviewsGiven),
             numberCell(dayTotal(day)),
@@ -389,17 +391,17 @@ function renderCommits(summary: ActivitySummary): void {
   const commits = summary.recentCommits;
   byId("commits-sub").textContent = countNote(
     commits.length,
-    summary.totals.commitsLanded,
-    "landed",
+    summary.totals.commitsAuthored,
+    "authored",
   );
 
   byId("commits-table").replaceChildren(
     commits.length === 0
-      ? text("p", "empty", "No commits landed in this window.")
+      ? text("p", "empty", "No commits authored in this window.")
       : table(
-          ["Landed", "Commit", "Lines"],
+          ["Authored", "Commit", "Lines"],
           commits.map((commit) => [
-            cell(shortDate(commit.committedAt.slice(0, 10)), "meta"),
+            cell(shortDate(commit.authoredAt.slice(0, 10)), "meta"),
             linkCell(`${commit.repository} ${commit.shortSha}`, commit.subject, commit.url),
             diffCell(commit.additions, commit.deletions),
           ]),
@@ -438,12 +440,28 @@ function renderRepositories(summary: ActivitySummary): void {
     summary.repositories.length === 0
       ? text("p", "empty", "No repositories synced yet.")
       : table(
-          ["Repository", "Ref walked", "Head", "Commits", "PRs merged", "Last synced"],
+          [
+            "Repository",
+            "Checkout",
+            "Ref walked",
+            "Head date",
+            "Commits mine / all",
+            "Authors seen",
+            "PRs merged",
+            "Last synced",
+          ],
           summary.repositories.map((repo) => [
-            cell(repo.slug ?? repo.localPath ?? repo.key),
+            cell(repo.slug ?? repo.key),
+            cell(repo.localPath ?? "—", "meta mono"),
             cell(repo.defaultRef ?? "—", "meta"),
-            cell((repo.headSha ?? "").slice(0, 8) || "—", "meta mono"),
-            numberCell(repo.commitsLanded),
+            cell(
+              repo.headCommittedAt === null
+                ? (repo.headSha ?? "").slice(0, 8) || "—"
+                : `${shortDate(repo.headCommittedAt.slice(0, 10))} ${(repo.headSha ?? "").slice(0, 8)}`,
+              "meta mono",
+            ),
+            cell(`${formatCount(repo.commitsAuthored)} / ${formatCount(repo.commitsObserved)}`, "num"),
+            cell(repo.authorEmails.join(", ") || "—", "meta"),
             numberCell(repo.pullRequestsMerged),
             cell(repo.lastSyncedAt === null ? "—" : formatRelative(repo.lastSyncedAt), "meta"),
           ]),
@@ -515,12 +533,12 @@ function markSelected(selector: string, value: string): void {
 /* ------------------------------------------------------------------- helpers */
 
 function dayTotal(day: DailyBucket): number {
-  return day.commitsLanded + day.pullRequestsMerged + day.reviewsGiven;
+  return day.commitsAuthored + day.pullRequestsMerged + day.reviewsGiven;
 }
 
 function describeDay(day: DailyBucket): string {
   return (
-    `${longDate(day.date)}: ${day.commitsLanded} commits landed, ` +
+    `${longDate(day.date)}: ${day.commitsAuthored} commits authored, ` +
     `${day.pullRequestsMerged} pull requests merged, ${day.reviewsGiven} reviews given.`
   );
 }

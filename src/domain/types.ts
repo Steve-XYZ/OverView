@@ -46,11 +46,11 @@ export interface CommitRecord {
   readonly sha: string;
   readonly authorName: string;
   readonly authorEmail: string;
-  /** When the author wrote it. Survives rebase. Used for "active days". */
+  /** When the author wrote it. Survives rebase. Used for commit metrics. */
   readonly authoredAt: string;
   readonly committerName: string;
   readonly committerEmail: string;
-  /** When it reached this history. Rewritten by rebase/squash. Used for "landed". */
+  /** Committer timestamp from Git. Rewritten by rebase/squash and retained for provenance. */
   readonly committedAt: string;
   readonly subject: string;
   readonly parentCount: number;

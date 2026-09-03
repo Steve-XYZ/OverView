@@ -11,6 +11,11 @@ export interface RepoHead {
   readonly committedAt: string;
 }
 
+export interface GitCommitCandidate {
+  readonly sha: string;
+  readonly authoredAt: string;
+}
+
 export class GitError extends Error {}
 
 export async function assertGitRepository(path: string): Promise<void> {
@@ -83,25 +88,54 @@ export async function fetchOrigin(path: string): Promise<void> {
   });
 }
 
-export async function readGitLog(
+export async function isShallowRepository(path: string): Promise<boolean> {
+  const result = await run("git", ["rev-parse", "--is-shallow-repository"], { cwd: path });
+  return result.code === 0 && result.stdout.trim() === "true";
+}
+
+/** Read reachable identities cheaply; callers apply their author-date window. */
+export async function readGitCommitCandidates(
   path: string,
   ref: string,
-  sinceIso: string,
-  format: string,
-): Promise<string> {
-  return await runOrThrow(
+): Promise<GitCommitCandidate[]> {
+  const stdout = await runOrThrow(
     "git",
-    [
-      "log",
-      ref,
-      `--since=${sinceIso}`,
-      "--numstat",
-      "--no-color",
-      "--no-decorate",
-      `--format=${format}`,
-    ],
+    ["log", ref, "--no-color", "--no-decorate", "--format=%H%x09%aI"],
     { cwd: path, timeoutMs: 300_000 },
   );
+  return stdout
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const [sha = "", authoredAt = ""] = line.split("\t");
+      return { sha, authoredAt };
+    });
+}
+
+/** Read full metadata and numstat only for commits selected by author date. */
+export async function readGitLog(
+  path: string,
+  shas: readonly string[],
+  format: string,
+): Promise<string> {
+  const chunks: string[] = [];
+  for (let offset = 0; offset < shas.length; offset += 200) {
+    chunks.push(
+      await runOrThrow(
+        "git",
+        [
+          "show",
+          "--numstat",
+          "--no-color",
+          "--no-decorate",
+          `--format=${format}`,
+          ...shas.slice(offset, offset + 200),
+        ],
+        { cwd: path, timeoutMs: 300_000 },
+      ),
+    );
+  }
+  return chunks.join("\n");
 }
 
 /** Emails configured for the user in this checkout, used to seed identity on `init`. */

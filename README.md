@@ -43,18 +43,19 @@ GitHub noreply address, all three belong in that list.
 | `report [--days N] [--json]` | Print the metrics |
 | `serve [--port N] [--host H]` | Serve the dashboard |
 
-`sync` is idempotent. Every record is upserted on the source's own identifier, so
-re-running over an overlapping window updates rows rather than duplicating them.
+`sync` is idempotent. Every record is upserted on the source's own identifier, and
+recent commit rows that are no longer reachable are removed. Rebases and squash merges
+therefore replace prior history instead of accumulating it.
 
 ## What the numbers mean
 
 Precision here matters more than breadth, so each metric states its rule. The
 dashboard repeats these definitions at the bottom of the page.
 
-- **Commits landed** — non-merge commits you authored that are reachable from the
-  repository's default branch, counted by **committer date**: when the work reached the
-  branch. Merge commits are excluded; they carry no authored change and would
-  double-count the branch they merge.
+- **Commits authored** — non-merge commits you authored that are reachable from the
+  repository's default branch, counted by **author date**. Merge commits are excluded;
+  they carry no authored change and would double-count the branch they merge. An
+  identical SHA seen in an upstream repository and a configured fork counts once.
 - **Active days** — local calendar days with at least one commit you **authored** (by
   author date, which survives a rebase), pull request you opened or landed, or review
   you submitted.
@@ -80,18 +81,18 @@ Every stored record carries `source_system`, `source_id` (a commit sha or GitHub
 id), `source_url`, `recorded_at` and the `sync_run_id` that fetched it. The
 `repository` table records the ref actually walked and the head it saw, so a stale
 `origin/main` is visible rather than silent. The `sync_run` table keeps one row per
-run with its counts and warnings.
+run with its counts and warnings. Commit rows retain both author and committer dates.
 
 That means any figure on the dashboard can be reconstructed from the database:
 
 ```sql
--- Which commits produced "commits landed" for the last 7 days?
-SELECT r.slug, c.sha, c.committed_at, c.subject, c.source_url
+-- Which commits produced "commits authored" for the last 7 days?
+SELECT r.slug, c.sha, c.authored_at, c.committed_at, c.subject, c.source_url
 FROM commit_event c JOIN repository r ON r.id = c.repository_id
 WHERE c.is_merge = 0
   AND c.author_email IN ('you@example.com')
-  AND c.committed_at_ms >= (unixepoch('now', '-7 days') * 1000)
-ORDER BY c.committed_at_ms DESC;
+  AND c.authored_at_ms >= (unixepoch('now', '-7 days') * 1000)
+ORDER BY c.authored_at_ms DESC;
 ```
 
 ## Layout
@@ -135,6 +136,8 @@ later, not the things it does now.
 - **A local checkout can be stale.** By default nothing touches the network for git;
   set `sync.fetchBeforeSync` to `true` to fetch first. The dashboard shows the ref and
   head it walked so you can tell.
+- **A shallow checkout has incomplete history.** Sync uses the commits it can reach and
+  emits a warning so low counts are not silent.
 - **An initial import inflates change volume.** A first commit of 14,000 lines is
   counted as 14,000 lines, because that is what happened.
 - **Only pull requests you opened count as landed.** Work merged by someone else on

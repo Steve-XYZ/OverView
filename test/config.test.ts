@@ -15,10 +15,14 @@ async function withConfig(contents: unknown): Promise<string> {
 describe("loadConfig", () => {
   it("lower-cases git emails so identity matching is case-insensitive", async () => {
     const path = await withConfig({
-      identity: { githubLogin: "ada", gitEmails: ["Ada@Example.COM", " ada.work@example.com "] },
+      identity: {
+        githubLogin: "Ada",
+        gitEmails: ["Ada@Example.COM", " ada.work@example.com ", "ada@example.com"],
+      },
     });
     const { config } = await loadConfig(path);
     assert.deepEqual(config.identity.gitEmails, ["ada@example.com", "ada.work@example.com"]);
+    assert.equal(config.identity.githubLogin, "ada");
   });
 
   it("resolves a relative repository path against the config file", async () => {
