@@ -114,7 +114,7 @@ export async function sync(
     }
   }
 
-  const linear = await syncLinear(db, { syncRunId, sinceIso, skipLinear: options.skipLinear, log, warnings });
+  const linear = await syncLinear(db, { syncRunId, skipLinear: options.skipLinear, log, warnings });
 
   const ok = results.every((result) => result.error === null) && linear.error === null;
   finishSyncRun(
@@ -243,14 +243,15 @@ function selectRepos(repos: readonly RepoConfig[], only: string | undefined): Re
 /**
  * Sync the developer's assigned Linear issues. Global, not per repository, and
  * independent of the git/GitHub collectors above: it only needs the API key
- * from the environment and the same `since` bound. A missing key skips with a
- * warning; a failed request fails the run but keeps whatever git/GitHub synced.
+ * from the environment. It fetches everything currently assigned — no recency
+ * window — so a fresh database still links a landed PR to its older issue;
+ * the dashboard windows the completed issues itself. A missing key skips with
+ * a warning; a failed request fails the run but keeps whatever git/GitHub synced.
  */
 async function syncLinear(
   db: Db,
   context: {
     readonly syncRunId: number;
-    readonly sinceIso: string;
     readonly skipLinear: boolean | undefined;
     readonly log: (line: string) => void;
     readonly warnings: string[];
@@ -268,7 +269,6 @@ async function syncLinear(
   try {
     const collected = await collectFromLinear({
       apiKey,
-      sinceIso: context.sinceIso,
       syncRunId: context.syncRunId,
     });
     context.warnings.push(...collected.warnings);

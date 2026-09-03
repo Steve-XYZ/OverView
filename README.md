@@ -169,11 +169,15 @@ later, not the things it does now.
   your behalf shows up as commits, not as a landed pull request.
 - **`gh` search is rate-limited** to roughly 30 queries a minute. Sync makes two per
   repository and runs them sequentially.
-- **Linear only syncs issues assigned to you** that were updated since
-  `sync.sinceDays`. Without `LINEAR_API_KEY` the Linear section is empty and the
-  sync warns rather than fails; pass `--no-linear` to silence even that.
+- **Linear syncs everything currently assigned to you**, with no recency window:
+  filtering by `updatedAt` would drop an older assigned issue on a fresh database
+  and falsely report its landed PR as unlinked. The 7/30/90-day filtering happens
+  in the metrics layer on `completedAt`. Without `LINEAR_API_KEY` the Linear
+  section is empty and the sync warns rather than fails; pass `--no-linear` to
+  silence even that.
 - **Links need an explicit issue key.** A pull request links when its title or
-  source branch names a synced issue (`BOS-2422` in either, case-insensitive);
+  source branch names a synced issue (`BOS-2422` in either, case-insensitive;
+  `-`, `/` and `_` all count as separators, so `BOS-2422_fix` links too);
   a commit links through its subject or as the squash commit of a linked PR.
   Mentions of unknown identifiers never link, and pull requests synced before
   this slice have no branch stored, so they link on title alone until resynced.

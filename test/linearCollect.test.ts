@@ -62,7 +62,7 @@ describe("toLinearIssue", () => {
 });
 
 describe("collectFromLinear", () => {
-  it("walks every page of assigned issues updated since the sync window", async () => {
+  it("walks every page of currently assigned issues, with no recency filter", async () => {
     const seen: string[] = [];
     const fetchImpl = stubFetch((_url, init) => {
       seen.push(String(init.body ?? ""));
@@ -97,7 +97,6 @@ describe("collectFromLinear", () => {
 
     const collected = await collectFromLinear({
       apiKey: "key",
-      sinceIso: "2026-06-01T00:00:00.000Z",
       syncRunId: 7,
       fetchImpl,
     });
@@ -108,7 +107,14 @@ describe("collectFromLinear", () => {
       ["BOS-2422", "BOS-2423"],
     );
     assert.equal(seen.length, 2);
-    assert.equal(seen[0]?.includes("2026-06-01T00:00:00.000Z"), true);
+    // No updatedAt window: an older assigned issue must still sync so a fresh
+    // database links the landed PR that named it instead of reporting unlinked.
+    // (The query still selects the `updatedAt` field; only the filter is gone.)
+    for (const body of seen) {
+      const parsed = JSON.parse(body) as { query?: string; variables?: Record<string, unknown> };
+      assert.equal("filter" in (parsed.variables ?? {}), false);
+      assert.equal(parsed.query?.includes("IssueFilter"), false);
+    }
   });
 
   it("skips nodes that cannot be joined to activity", async () => {
@@ -126,7 +132,6 @@ describe("collectFromLinear", () => {
     );
     const collected = await collectFromLinear({
       apiKey: "key",
-      sinceIso: "2026-06-01T00:00:00.000Z",
       syncRunId: 7,
       fetchImpl,
     });

@@ -15,6 +15,11 @@ describe("extractLinearIdentifiers", () => {
     assert.deepEqual(extractLinearIdentifiers("feature/bos-2422-fix"), ["BOS-2422"]);
   });
 
+  it("treats underscores as separators, not as part of the key", () => {
+    assert.deepEqual(extractLinearIdentifiers("BOS-2422_fix the redirect"), ["BOS-2422"]);
+    assert.deepEqual(extractLinearIdentifiers("feature/bos-2422_fix"), ["BOS-2422"]);
+  });
+
   it("returns every distinct identifier in order of first appearance", () => {
     assert.deepEqual(extractLinearIdentifiers("BOS-1 then bos-2 then BOS-1 again"), [
       "BOS-1",
@@ -47,6 +52,13 @@ describe("linkPullRequest", () => {
     const links = linkPullRequest("A tidy refactor", "ada/bos-2423-polish", known);
     assert.equal(links.length, 1);
     assert.equal(links[0]?.identifier, "BOS-2423");
+    assert.deepEqual([...(links[0]?.via ?? [])], ["pr_branch"]);
+  });
+
+  it("links through a branch that uses underscores as separators", () => {
+    const links = linkPullRequest("A tidy refactor", "feature/BOS-2422_fix", known);
+    assert.equal(links.length, 1);
+    assert.equal(links[0]?.identifier, "BOS-2422");
     assert.deepEqual([...(links[0]?.via ?? [])], ["pr_branch"]);
   });
 

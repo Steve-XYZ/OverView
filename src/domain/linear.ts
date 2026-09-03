@@ -33,9 +33,11 @@ export interface CommitLink {
  * The team key must be at least two characters starting with a letter so a
  * version string like `v-2` does not match. Matching is case-insensitive
  * because branches are usually lower case (`bos-2422-fix`); callers normalise
- * to upper case before comparing with stored issues.
+ * to upper case before comparing with stored issues. Underscores count as
+ * separators too (`BOS-2422_fix`), because `\b` treats `_` as a word character
+ * and would otherwise miss the key.
  */
-const IDENTIFIER_PATTERN = /\b([A-Z][A-Z0-9]{1,10}-\d+)\b/gi;
+const IDENTIFIER_PATTERN = /(?<![A-Z0-9])([A-Z][A-Z0-9]{1,10}-\d+)(?![0-9])/gi;
 
 /** All distinct identifiers in `text`, upper-cased, in order of first appearance. */
 export function extractLinearIdentifiers(text: string | null | undefined): string[] {

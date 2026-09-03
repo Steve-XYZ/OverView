@@ -1,11 +1,13 @@
 /**
  * Turns the viewer's assigned Linear issues into domain records.
  *
- * One query, windowed on `updatedAt`: anything created, completed, or touched
- * since the sync window opened. That window matches the git/GitHub retention
- * (`sync.sinceDays`), so the 7/30/90-day dashboard windows always read from
- * synced data. Kept separate from the git/GitHub collectors — it knows Linear,
- * knows no SQL, and never reads a pull request.
+ * One query over everything currently assigned to the viewer, paginated. There
+ * is deliberately no `updatedAt` window here: filtering assigned issues by
+ * recency would drop an older assigned issue a fresh database has never seen,
+ * and a landed pull request naming it would then falsely count as unlinked.
+ * The 7/30/90-day filtering lives in the metrics layer (`completedAt` in the
+ * window), where it cannot corrupt the join. Kept separate from the git/GitHub
+ * collectors — it knows Linear, knows no SQL, and never reads a pull request.
  */
 
 import type { LinearIssueRecord, Provenance } from "../../domain/types.ts";
@@ -15,8 +17,6 @@ const PAGE_SIZE = 50;
 
 export interface LinearCollectionOptions {
   readonly apiKey: string;
-  /** Full ISO lower bound handed to the `updatedAt` filter. */
-  readonly sinceIso: string;
   readonly syncRunId: number;
   readonly fetchImpl?: FetchImpl;
 }
@@ -27,9 +27,9 @@ export interface LinearCollection {
 }
 
 const ASSIGNED_QUERY = `
-query AssignedIssues($after: String, $first: Int!, $filter: IssueFilter) {
+query AssignedIssues($after: String, $first: Int!) {
   viewer {
-    assignedIssues(first: $first, after: $after, filter: $filter) {
+    assignedIssues(first: $first, after: $after) {
       nodes {
         id
         identifier
@@ -83,7 +83,6 @@ export async function collectFromLinear(
       {
         after: cursor,
         first: PAGE_SIZE,
-        filter: { updatedAt: { gte: options.sinceIso } },
       },
       graphqlOptions,
     );
