@@ -10,7 +10,7 @@ import {
   seedDatabase,
   writeAll,
 } from "./helpers/seed.ts";
-import { upsertLinearIssues } from "../src/store/writes.ts";
+import { finishSyncRun, upsertLinearIssues } from "../src/store/writes.ts";
 
 const NOW = Date.parse("2026-09-03T18:00:00Z");
 const window30 = () => createWindow(30, NOW, "UTC");
@@ -42,6 +42,7 @@ describe("linear dashboard slice", () => {
     });
 
     const summary = buildSummary(seeded.db, window30(), IDENTITY);
+    assert.equal(summary.linear.completedIssuesTotal, 1);
     assert.equal(summary.linear.completedIssues.length, 1);
     const [issue] = summary.linear.completedIssues;
     assert.equal(issue?.identifier, "BOS-2422");
@@ -158,6 +159,7 @@ describe("linear dashboard slice", () => {
     const seeded = seedDatabase();
     const summary = buildSummary(seeded.db, window30(), IDENTITY);
     assert.deepEqual(summary.linear.completedIssues, []);
+    assert.equal(summary.linear.completedIssuesTotal, 0);
     assert.deepEqual(summary.linear.coverage, {
       landedPullRequests: 0,
       linkedPullRequests: 0,
@@ -166,6 +168,43 @@ describe("linear dashboard slice", () => {
     });
     assert.equal(typeof summary.definitions["linearCompleted"], "string");
     assert.equal(typeof summary.definitions["linearCoverage"], "string");
+    seeded.db.close();
+  });
+
+  it("reports the full completed total when the detail list is capped", () => {
+    const seeded = seedDatabase();
+    writeAll(seeded, {
+      linearIssues: Array.from({ length: 30 }, (_, index) =>
+        linearIssue({
+          id: `L_${index}`,
+          identifier: `BOS-${3000 + index}`,
+          completedAt: `2026-09-01T${String(index % 24).padStart(2, "0")}:00:00Z`,
+          syncRunId: seeded.syncRunId,
+        }),
+      ),
+    });
+
+    const summary = buildSummary(seeded.db, window30(), IDENTITY);
+    assert.equal(summary.linear.completedIssuesTotal, 30);
+    assert.equal(summary.linear.completedIssues.length, 25);
+    seeded.db.close();
+  });
+
+  it("surfaces when the last sync could not load Linear", () => {
+    const seeded = seedDatabase();
+    finishSyncRun(
+      seeded.db,
+      seeded.syncRunId,
+      "ok",
+      JSON.stringify({
+        repositories: [],
+        linear: { issues: 0, error: null, status: "missing_key" },
+        warnings: [],
+      }),
+    );
+
+    const summary = buildSummary(seeded.db, window30(), IDENTITY);
+    assert.equal(summary.linear.syncStatus, "missing_key");
     seeded.db.close();
   });
 
