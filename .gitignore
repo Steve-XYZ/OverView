@@ -1,5 +1,8 @@
 node_modules/
 dist/
+public/
+.vercel/
+.env*.local
 .overview/
 overview.config.json
 *.db

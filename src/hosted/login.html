@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Overview — sign in</title>
+    <style>
+      :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
+      body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: #111827; color: #f9fafb; }
+      main { width: min(22rem, calc(100vw - 3rem)); padding: 2rem; border: 1px solid #374151; border-radius: 1rem; background: #1f2937; }
+      h1 { margin: 0 0 .4rem; font-size: 1.5rem; }
+      p { margin: 0 0 1.5rem; color: #cbd5e1; }
+      label { display: block; margin-bottom: .5rem; font-weight: 600; }
+      input, button { box-sizing: border-box; width: 100%; min-height: 2.8rem; border-radius: .55rem; font: inherit; }
+      input { padding: .65rem .75rem; border: 1px solid #64748b; background: #0f172a; color: #fff; }
+      button { margin-top: .8rem; border: 0; background: #38bdf8; color: #082f49; font-weight: 700; cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Overview</h1>
+      <p>Sign in to view the latest dashboard published from your local machine.</p>
+      <form method="post" action="/api/login">
+        <label for="password">Dashboard password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required autofocus />
+        <button type="submit">Sign in</button>
+      </form>
+    </main>
+  </body>
+</html>

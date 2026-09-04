@@ -127,7 +127,7 @@ async function handle(
     sendText(
       response,
       503,
-      "The dashboard assets are not built yet. Run `npm run build`, then reload.",
+      "The dashboard assets are not built yet. Run `pnpm build`, then reload.",
     );
     return;
   }

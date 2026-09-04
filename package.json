@@ -2,6 +2,7 @@
   "name": "overview",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@11.25.0",
   "type": "module",
   "description": "Local-first personal engineering activity dashboard",
   "bin": {
@@ -12,6 +13,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-assets.js",
+    "build:hosted": "tsc -p tsconfig.hosted.json && tsc -p tsconfig.json && node scripts/copy-assets.js && node scripts/copy-hosted-assets.js",
     "typecheck": "tsc -p tsconfig.test.json",
     "watch": "tsc -p tsconfig.json --watch",
     "test": "node --test \"test/**/*.test.ts\"",
@@ -19,7 +21,12 @@
     "sync": "node src/cli.ts sync",
     "serve": "node src/cli.ts serve",
     "report": "node src/cli.ts report",
-    "check": "npm run typecheck && npm test"
+    "check": "tsc -p tsconfig.test.json && tsc -p tsconfig.hosted.json && node --test \"test/**/*.test.ts\"",
+    "typecheck:hosted": "tsc -p tsconfig.hosted.json"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.0.2",
+    "@vercel/functions": "^3.1.3"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",

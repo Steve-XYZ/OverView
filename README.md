@@ -5,22 +5,25 @@ last 7, 30 or 90 days?**
 
 It reads your local git checkouts and the GitHub CLI you have already authenticated,
 stores the result in a SQLite file on your machine, and serves one page on the
-loopback interface. Nothing leaves the machine and no credential is stored.
+loopback interface. An optional hosted mirror can receive redacted, already-computed
+dashboard summaries; collection and company credentials stay local.
 
 ## Requirements
 
 - Node 24 or newer (for `node:sqlite` and native TypeScript execution)
+- pnpm 11 (`corepack enable` installs the version pinned by `packageManager`)
 - `git`
 - `gh`, authenticated (`gh auth login`) — optional; without it you get commits only
 - `LINEAR_API_KEY` in the environment — optional; without it you get no Linear issues
 
-Zero runtime dependencies. TypeScript 7 is the only devDependency.
+The local collector path has no runtime package dependency. The hosted functions use
+only the Neon serverless driver and Vercel's middleware helpers.
 
 ## Quick start
 
 ```bash
-npm install
-npm run build
+pnpm install
+pnpm build
 
 node dist/cli.js init --repo ~/src/one-repo --repo ~/src/another
 node dist/cli.js sync
@@ -51,11 +54,95 @@ node dist/cli.js sync
 | `repo list` | Show what is configured |
 | `sync [--days N] [--only <text>] [--no-github] [--no-linear]` | Ingest into the local database |
 | `report [--days N] [--json]` | Print the metrics |
+| `publish [--endpoint <https-url>]` | Redact and upload the current 7/30/90-day summaries |
 | `serve [--port N] [--host H]` | Serve the dashboard |
 
 `sync` is idempotent. Every record is upserted on the source's own identifier, and
 recent commit rows that are no longer reachable are removed. Rebases and squash merges
 therefore replace prior history instead of accumulating it.
+
+## Private hosted mirror
+
+The hosted path is deliberately one-way:
+
+```text
+local Git / gh / Linear -> local SQLite -> metrics -> redaction -> HTTPS publish
+                                                               -> Vercel + Neon
+```
+
+Vercel never receives GitHub or Linear credentials, source code, diffs, or raw
+collector records. Neon stores one current JSONB publication containing the 7, 30,
+and 90-day `ActivitySummary` objects plus a schema version, content ID, and server
+publication time. Publishing the same content again is a no-op, while newer content
+replaces the singleton row. A failed request does not write to SQLite.
+
+### Configure redaction
+
+Mark each private/work repository explicitly. Repositories default to `detailed` so
+existing configs keep their behavior:
+
+```json
+{
+  "repositories": [
+    {
+      "path": "~/src/work-project",
+      "githubRepo": "company/work-project",
+      "hostedDetail": "redacted"
+    }
+  ],
+  "publish": {
+    "endpoint": "https://your-overview.vercel.app/api/publish",
+    "redactLinearDetails": true
+  }
+}
+```
+
+For a redacted repository, the publisher keeps metric totals, repository identifier,
+PR number, issue identifier, and commit SHA, but clears URLs, commit subjects, PR and
+review titles, ref/head details, and observed author emails. It also clears a Linear
+issue's title and URL when that issue links to a redacted repository.
+`redactLinearDetails: true` clears every Linear title and URL, including issues with
+no repository contribution in the current window. Local paths and identity Git emails
+are never published, even for detailed repositories. These changes apply only to the
+copied payload; local reports and the loopback dashboard retain full detail.
+
+### Deploy Vercel and Neon
+
+1. Create a small Neon Postgres database and copy its pooled connection string.
+2. Import this repository into Vercel as an “Other” project. `vercel.json` supplies
+   the pnpm build command, static rewrites, and security headers.
+3. Add these Vercel environment variables for Production. Use independent values:
+
+   - `DATABASE_URL` — the Neon pooled connection string.
+   - `OVERVIEW_PUBLISH_TOKEN` — a random publish-only token, at least 32 characters.
+   - `OVERVIEW_DASHBOARD_PASSWORD` — a strong, unique password entered on your phone.
+   - `OVERVIEW_SESSION_SECRET` — a separate random value, at least 32 characters.
+
+   Generate the random token and session secret with `openssl rand -hex 32`. Do not
+   prefix any secret with `NEXT_PUBLIC_` or commit it to a file. The first hosted
+   request creates the single `overview_published_snapshot` table automatically.
+4. Deploy, then set the matching publish token only in the local environment:
+
+```bash
+export OVERVIEW_PUBLISH_TOKEN='the-random-publish-token'
+# Optional instead of publish.endpoint in overview.config.json:
+export OVERVIEW_PUBLISH_URL='https://your-overview.vercel.app/api/publish'
+
+node dist/cli.js sync
+node dist/cli.js publish
+```
+
+Open the Vercel HTTPS URL on your phone and sign in. Dashboard access uses a signed,
+30-day, `Secure`, `HttpOnly`, `SameSite=Lax` cookie; it does not accept the publish
+token. The publish API accepts only the bearer token and cannot create a dashboard
+session.
+
+The command below is ready to place in a local cron or systemd timer when desired;
+OverView itself does not schedule or collect anything in the cloud:
+
+```bash
+cd /path/to/overview && node dist/cli.js sync && node dist/cli.js publish
+```
 
 ## What the numbers mean
 
@@ -130,8 +217,12 @@ src/
     sync.ts   Decides what to run and hands records to the write layer.
   store/      SQLite. writes.ts is the only path in; reads.ts the only path out.
   metrics/    Windows, statistics, and the summary the dashboard eats.
+  publish/    Build 7/30/90 summaries, redact them, and send the HTTPS publication.
+  hosted/     Shared hosted authentication and the Neon singleton snapshot store.
   server/     Loopback HTTP: /api/summary and the static page.
   web/        The dashboard. Its only contract is the ActivitySummary JSON.
+api/          Vercel publish, authenticated read, login, and logout functions.
+middleware.ts Protects hosted pages and summary data with the dashboard session.
 ```
 
 The boundaries are one-directional: `ingest` and `metrics` both depend on `domain` and
@@ -142,16 +233,14 @@ That is what makes the likely next steps additive rather than a rewrite:
 
 - **Another provider** (GitLab, Linear) — add a collector under `ingest/` producing the
   same records and a branch in `sync.ts`. Nothing else changes.
-- **Postgres** — reimplement `store/writes.ts` and `store/reads.ts` against a new
-  driver. `metrics/` consumes rows, not a connection.
-- **A hosted dashboard** — put a real server in front of `buildSummary`. The page
-  already talks to it over JSON.
+- **Postgres as the local source of truth** — reimplement `store/writes.ts` and
+  `store/reads.ts` against a new driver. The hosted Neon table is only a mirror and
+  does not change this boundary.
 - **A GitHub App instead of `gh`** — replace `ingest/github/ghCli.ts`. The collector
   above it parses GraphQL responses, not CLI output.
 
-None of that is built or stubbed. There is no plugin system, no queue, no metric
-registry and no tenancy — those are the things this design is meant to make cheap
-later, not the things it does now.
+There is no plugin system, queue, metric registry, tenancy, cloud collector, GitHub
+App, or Linear OAuth flow.
 
 ## Known limits
 
@@ -188,10 +277,12 @@ later, not the things it does now.
 ## Development
 
 ```bash
-npm run typecheck     # tsc over src and test
-npm test              # node:test, no build required
-npm run check         # both
-npm run build         # tsc + copy the page assets into dist/web
+pnpm typecheck        # tsc over src and test
+pnpm typecheck:hosted # tsc over Vercel functions and middleware
+pnpm test             # node:test, no build required
+pnpm check            # all typechecks and tests
+pnpm build            # tsc + copy the page assets into dist/web
+pnpm build:hosted     # build local output and Vercel public assets
 node src/cli.ts sync  # run from source via Node's TypeScript support
 ```
 

@@ -43,6 +43,23 @@ describe("loadConfig", () => {
     assert.equal(config.sync.sinceDays, defaultConfig().sync.sinceDays);
     assert.equal(config.server.host, "127.0.0.1");
     assert.equal(config.excludePaths.includes("**/package-lock.json"), true);
+    assert.equal(config.publish.endpoint, null);
+    assert.equal(config.publish.redactLinearDetails, false);
+  });
+
+  it("validates hosted redaction settings", async () => {
+    const path = await withConfig({
+      repositories: [{ path: "/tmp/x", hostedDetail: "redacted" }],
+      publish: { endpoint: "https://overview.example/api/publish", redactLinearDetails: true },
+    });
+    const { config } = await loadConfig(path);
+    assert.equal(config.repositories[0]?.hostedDetail, "redacted");
+    assert.equal(config.publish.redactLinearDetails, true);
+
+    const invalid = await withConfig({
+      repositories: [{ path: "/tmp/x", hostedDetail: "private-ish" }],
+    });
+    await assert.rejects(() => loadConfig(invalid), /hostedDetail/);
   });
 
   it("rejects a malformed GitHub slug rather than silently skipping it", async () => {

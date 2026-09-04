@@ -81,13 +81,15 @@ function render(summary: ActivitySummary): void {
   byId("scope-line").textContent =
     `${summary.window.startDay} to ${summary.window.endDay} · ${summary.window.timeZone} · ` +
     `GitHub: ${summary.identity.githubLogin ?? "not configured"} · Git emails: ` +
-    `${summary.identity.gitEmails.join(", ") || "none configured"} · ` +
+    `${summary.identity.gitEmails.join(", ") || (summary.publishedAt === undefined ? "none configured" : "hidden")} · ` +
     `${summary.repositories.length} ${summary.repositories.length === 1 ? "repository" : "repositories"}`;
 
   byId("sync-line").textContent =
-    summary.sync.lastRunAt === null
-      ? "Never synced — run `overview sync`"
-      : `Last synced ${formatRelative(summary.sync.lastRunAt)} (${summary.sync.status})`;
+    summary.publishedAt !== undefined
+      ? `Last published ${formatRelative(summary.publishedAt)}`
+      : summary.sync.lastRunAt === null
+        ? "Never synced — run `overview sync`"
+        : `Last synced ${formatRelative(summary.sync.lastRunAt)} (${summary.sync.status})`;
 
   byId("hero-value").textContent = formatCount(t.pullRequestsMerged);
   byId("hero-note").textContent =
