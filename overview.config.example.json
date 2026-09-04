@@ -4,8 +4,18 @@
     "gitEmails": ["you@example.com", "1234567+you@users.noreply.github.com"]
   },
   "repositories": [
-    { "path": "/absolute/path/to/checkout" },
-    { "path": "~/src/other-repo", "githubRepo": "owner/other-repo", "defaultBranch": "main" }
+    {
+      "path": "~/src/personal-project",
+      "githubRepo": "you/personal-project",
+      "defaultBranch": "main",
+      "hostedDetail": "detailed"
+    },
+    {
+      "path": "~/src/work-project",
+      "githubRepo": "company/work-project",
+      "defaultBranch": "main",
+      "hostedDetail": "redacted"
+    }
   ],
   "sync": {
     "sinceDays": 180,
@@ -18,5 +28,9 @@
     "**/*.generated.*"
   ],
   "database": ".overview/overview.db",
-  "server": { "port": 4317, "host": "127.0.0.1" }
+  "server": { "port": 4317, "host": "127.0.0.1" },
+  "publish": {
+    "endpoint": "https://your-overview.vercel.app/api/publish",
+    "redactLinearDetails": true
+  }
 }

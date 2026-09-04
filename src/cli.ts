@@ -7,6 +7,7 @@
  *   overview repo list                 show configured repositories
  *   overview sync [--days N] [--only]  ingest git and GitHub into the local database
  *   overview report [--days N]         print the metrics
+ *   overview publish                   upload redacted 7/30/90-day summaries
  *   overview serve [--port N]          serve the dashboard on the loopback interface
  */
 
@@ -32,6 +33,12 @@ import { renderTextReport } from "./report/text.ts";
 import { resolveWebRoot, startServer } from "./server/server.ts";
 import { assertGitRepository, detectGithubSlug, readConfiguredEmails } from "./ingest/git/gitCli.ts";
 import { ghAuthenticated, ghAvailable, viewerLogin } from "./ingest/github/ghCli.ts";
+import {
+  buildPublication,
+  publishSnapshots,
+  PUBLISH_ENDPOINT_ENV,
+  PUBLISH_TOKEN_ENV,
+} from "./publish/publish.ts";
 
 const USAGE = `overview — what did I ship?
 
@@ -40,11 +47,13 @@ const USAGE = `overview — what did I ship?
   overview repo list
   overview sync [--days N] [--only <text>] [--no-github] [--no-linear]
   overview report [--days N]
+  overview publish [--endpoint <https-url>]
   overview serve [--port N] [--host H]
 
 Options
   --config <path>   Use a specific config file
   --days N          Window in days (default ${DEFAULT_WINDOW_DAYS}); for sync, how far back to ingest
+  --endpoint <url>  Override publish.endpoint for this publication
 `;
 
 await run(process.argv.slice(2));
@@ -65,6 +74,9 @@ async function run(argv: string[]): Promise<void> {
       case "report":
         await commandReport(rest);
         break;
+      case "publish":
+        await commandPublish(rest);
+        break;
       case "serve":
         await commandServe(rest);
         break;
@@ -81,6 +93,42 @@ async function run(argv: string[]): Promise<void> {
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
+  }
+}
+
+/* ------------------------------------------------------------------ publish */
+
+async function commandPublish(argv: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args: argv,
+    options: { config: { type: "string" }, endpoint: { type: "string" } },
+    allowPositionals: false,
+  });
+
+  const { config, databasePath } = await loadConfig(values.config);
+  requireDatabase(databasePath);
+  const endpoint = values.endpoint ?? process.env[PUBLISH_ENDPOINT_ENV] ?? config.publish.endpoint;
+  if (endpoint === null || endpoint === undefined || endpoint.length === 0) {
+    throw new ConfigError(
+      `No publish endpoint configured. Set publish.endpoint or ${PUBLISH_ENDPOINT_ENV}.`,
+    );
+  }
+  const token = process.env[PUBLISH_TOKEN_ENV];
+  if (token === undefined || token.length === 0) {
+    throw new ConfigError(`${PUBLISH_TOKEN_ENV} is required and is never read from the config file.`);
+  }
+
+  const db = openDatabase(databasePath);
+  try {
+    const publication = buildPublication(db, config);
+    const result = await publishSnapshots(endpoint, token, publication);
+    process.stdout.write(
+      result.alreadyCurrent
+        ? `Hosted dashboard is already current (${result.publishedAt}).\n`
+        : `Published 7, 30 and 90 day summaries at ${result.publishedAt}.\n`,
+    );
+  } finally {
+    db.close();
   }
 }
 
@@ -286,7 +334,7 @@ async function commandServe(argv: string[]): Promise<void> {
 
   process.stdout.write(`Dashboard on ${server.url}\n`);
   if (resolveWebRoot() === null) {
-    process.stdout.write("The page assets are not built. Run `npm run build`, then reload.\n");
+    process.stdout.write("The page assets are not built. Run `pnpm build`, then reload.\n");
   }
   process.stdout.write("Ctrl-C to stop.\n");
 

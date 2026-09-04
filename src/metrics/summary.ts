@@ -122,6 +122,8 @@ export type LinearDataStatus = "synced" | "missing_key" | "skipped" | "failed" |
 
 export interface ActivitySummary {
   readonly generatedAt: string;
+  /** Set by the hosted read API. Local summaries intentionally omit it. */
+  readonly publishedAt?: string;
   readonly window: {
     readonly days: number;
     readonly startDay: string;

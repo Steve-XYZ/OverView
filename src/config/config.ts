@@ -17,6 +17,8 @@ export interface RepoConfig {
   readonly githubRepo?: string;
   /** Branch to treat as shipped history. Auto-detected when omitted. */
   readonly defaultBranch?: string;
+  /** Detail allowed in the hosted mirror. Metrics and stable identifiers are always retained. */
+  readonly hostedDetail?: "detailed" | "redacted";
 }
 
 export interface OverviewConfig {
@@ -36,6 +38,12 @@ export interface OverviewConfig {
   /** SQLite file. Relative paths resolve against the config file's directory. */
   readonly database: string;
   readonly server: { readonly port: number; readonly host: string };
+  readonly publish: {
+    /** Hosted `/api/publish` endpoint. The bearer token is always read from the environment. */
+    readonly endpoint: string | null;
+    /** Remove Linear titles and URLs from every hosted summary. */
+    readonly redactLinearDetails: boolean;
+  };
 }
 
 export const DEFAULT_EXCLUDE_PATHS = [
@@ -70,6 +78,7 @@ export function defaultConfig(): OverviewConfig {
     excludePaths: [...DEFAULT_EXCLUDE_PATHS],
     database: ".overview/overview.db",
     server: { port: 4317, host: "127.0.0.1" },
+    publish: { endpoint: null, redactLinearDetails: false },
   };
 }
 
@@ -150,6 +159,7 @@ function validateConfig(raw: unknown, source: string): OverviewConfig {
   const fetchBeforeSync = Boolean(syncRaw["fetchBeforeSync"] ?? base.sync.fetchBeforeSync);
 
   const serverRaw = isRecord(raw["server"]) ? raw["server"] : {};
+  const publishRaw = isRecord(raw["publish"]) ? raw["publish"] : {};
 
   return {
     identity: { githubLogin, gitEmails },
@@ -164,6 +174,12 @@ function validateConfig(raw: unknown, source: string): OverviewConfig {
       port: positiveInt(serverRaw["port"] ?? base.server.port, `${source}: server.port`),
       host: optionalString(serverRaw["host"], `${source}: server.host`) ?? base.server.host,
     },
+    publish: {
+      endpoint: optionalString(publishRaw["endpoint"], `${source}: publish.endpoint`),
+      redactLinearDetails: Boolean(
+        publishRaw["redactLinearDetails"] ?? base.publish.redactLinearDetails,
+      ),
+    },
   };
 }
 
@@ -176,10 +192,15 @@ function validateRepo(entry: unknown, label: string, source: string): RepoConfig
     throw new ConfigError(`${label}.githubRepo must look like "owner/name", got ${githubRepo}.`);
   }
   const defaultBranch = optionalString(entry["defaultBranch"], `${label}.defaultBranch`);
+  const hostedDetail = optionalString(entry["hostedDetail"], `${label}.hostedDetail`);
+  if (hostedDetail !== null && hostedDetail !== "detailed" && hostedDetail !== "redacted") {
+    throw new ConfigError(`${label}.hostedDetail must be "detailed" or "redacted".`);
+  }
   return {
     path: resolveFromConfig(source, expandHome(path)),
     ...(githubRepo === null ? {} : { githubRepo }),
     ...(defaultBranch === null ? {} : { defaultBranch }),
+    ...(hostedDetail === null ? {} : { hostedDetail }),
   };
 }
 
