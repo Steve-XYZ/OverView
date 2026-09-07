@@ -78,6 +78,11 @@ async function load(days: number): Promise<void> {
 function render(summary: ActivitySummary): void {
   const t = summary.totals;
 
+  // Only the hosted read API names an account, so the local dashboard stays link-free.
+  const accountLink = byId("account-link");
+  accountLink.hidden = summary.account === undefined;
+  if (summary.account !== undefined) accountLink.textContent = summary.account.githubLogin;
+
   byId("scope-line").textContent =
     `${summary.window.startDay} to ${summary.window.endDay} · ${summary.window.timeZone} · ` +
     `GitHub: ${summary.identity.githubLogin ?? "not configured"} · Git emails: ` +

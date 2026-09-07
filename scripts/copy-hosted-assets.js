@@ -11,6 +11,9 @@ const files = [
   ["dist/report/text.js", "public/report/text.js"],
   ["dist/domain/time.js", "public/domain/time.js"],
   ["src/hosted/login.html", "public/login.html"],
+  ["dist/hosted/login.js", "public/login.js"],
+  ["src/hosted/account.html", "public/account.html"],
+  ["dist/hosted/account.js", "public/account.js"],
 ];
 
 for (const [source, target] of files) {

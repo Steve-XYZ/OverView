@@ -7,24 +7,26 @@
     <style>
       :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
       body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: #111827; color: #f9fafb; }
-      main { width: min(22rem, calc(100vw - 3rem)); padding: 2rem; border: 1px solid #374151; border-radius: 1rem; background: #1f2937; }
+      main { width: min(24rem, calc(100vw - 3rem)); padding: 2rem; border: 1px solid #374151; border-radius: 1rem; background: #1f2937; }
       h1 { margin: 0 0 .4rem; font-size: 1.5rem; }
-      p { margin: 0 0 1.5rem; color: #cbd5e1; }
-      label { display: block; margin-bottom: .5rem; font-weight: 600; }
-      input, button { box-sizing: border-box; width: 100%; min-height: 2.8rem; border-radius: .55rem; font: inherit; }
-      input { padding: .65rem .75rem; border: 1px solid #64748b; background: #0f172a; color: #fff; }
-      button { margin-top: .8rem; border: 0; background: #38bdf8; color: #082f49; font-weight: 700; cursor: pointer; }
+      p { margin: 0 0 1.5rem; color: #cbd5e1; line-height: 1.5; }
+      .sign-in { display: flex; align-items: center; justify-content: center; gap: .6rem; box-sizing: border-box; width: 100%; min-height: 2.8rem; border-radius: .55rem; border: 0; background: #38bdf8; color: #082f49; font: inherit; font-weight: 700; text-decoration: none; }
+      .note { margin: 1.25rem 0 0; font-size: .85rem; color: #94a3b8; }
+      .error { margin: 0 0 1.25rem; padding: .7rem .85rem; border: 1px solid #7f1d1d; border-radius: .55rem; background: #450a0a; color: #fecaca; font-size: .9rem; }
+      [hidden] { display: none; }
     </style>
   </head>
   <body>
     <main>
       <h1>Overview</h1>
-      <p>Sign in to view the latest dashboard published from your local machine.</p>
-      <form method="post" action="/api/login">
-        <label for="password">Dashboard password</label>
-        <input id="password" name="password" type="password" autocomplete="current-password" required autofocus />
-        <button type="submit">Sign in</button>
-      </form>
+      <p id="error" class="error" hidden></p>
+      <p>Sign in to see the dashboard your local collector publishes. Each account sees only its own data.</p>
+      <a class="sign-in" href="/api/auth/github/start">Continue with GitHub</a>
+      <p class="note">
+        GitHub is used only to identify you. Overview asks for no repository access, and
+        never receives your source code, Git credentials or Linear key.
+      </p>
     </main>
+    <script type="module" src="/login.js"></script>
   </body>
 </html>

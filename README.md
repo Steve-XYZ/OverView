@@ -71,10 +71,16 @@ local Git / gh / Linear -> local SQLite -> metrics -> redaction -> HTTPS publish
 ```
 
 Vercel never receives GitHub or Linear credentials, source code, diffs, or raw
-collector records. Neon stores one current JSONB publication containing the 7, 30,
-and 90-day `ActivitySummary` objects plus a schema version, content ID, and server
-publication time. Publishing the same content again is a no-op, while newer content
-replaces the singleton row. A failed request does not write to SQLite.
+collector records. Neon stores, per account, one current JSONB publication containing
+the 7, 30, and 90-day `ActivitySummary` objects plus a schema version, content ID, and
+server publication time. Publishing the same content again is a no-op, while newer
+content replaces that account's row. A failed request does not write to SQLite.
+
+The deployment holds accounts, not one shared dashboard. Each developer signs in with
+GitHub, mints their own collector token, and sees only what their own collector
+published. GitHub is used for identity alone: the authorize request asks for no
+scopes, and the access token behind it is read once to learn your login and is never
+stored. Nothing in the cloud can reach a repository.
 
 ### Configure redaction
 
@@ -109,33 +115,64 @@ copied payload; local reports and the loopback dashboard retain full detail.
 ### Deploy Vercel and Neon
 
 1. Create a small Neon Postgres database and copy its pooled connection string.
-2. Import this repository into Vercel as an “Other” project. `vercel.json` supplies
+2. Register a GitHub OAuth app (Settings → Developer settings → OAuth Apps). Set the
+   homepage to your Vercel URL and the authorization callback to
+   `https://your-overview.vercel.app/api/auth/github/callback`. Request no scopes;
+   OverView asks for none. Copy the client ID and generate a client secret.
+3. Import this repository into Vercel as an "Other" project. `vercel.json` supplies
    the pnpm build command, static rewrites, and security headers.
-3. Add these Vercel environment variables for Production. Use independent values:
+4. Add these Vercel environment variables for Production. Use independent values:
 
    - `DATABASE_URL` — the Neon pooled connection string.
-   - `OVERVIEW_PUBLISH_TOKEN` — a random publish-only token, at least 32 characters.
-   - `OVERVIEW_DASHBOARD_PASSWORD` — a strong, unique password entered on your phone.
-   - `OVERVIEW_SESSION_SECRET` — a separate random value, at least 32 characters.
+   - `OVERVIEW_SESSION_SECRET` — a random value, at least 32 characters.
+   - `OVERVIEW_GITHUB_CLIENT_ID` — from the OAuth app.
+   - `OVERVIEW_GITHUB_CLIENT_SECRET` — from the OAuth app.
+   - `OVERVIEW_ALLOWED_GITHUB_LOGINS` — optional, comma separated. When set, only
+     those logins may hold an account. When unset, anyone with a GitHub account can
+     sign in and gets an empty dashboard of their own.
 
-   Generate the random token and session secret with `openssl rand -hex 32`. Do not
-   prefix any secret with `NEXT_PUBLIC_` or commit it to a file. The first hosted
-   request creates the single `overview_published_snapshot` table automatically.
-4. Deploy, then set the matching publish token only in the local environment:
+   Generate the session secret with `openssl rand -hex 32`. Do not prefix any secret
+   with `NEXT_PUBLIC_` or commit it to a file. The first hosted request creates the
+   `overview_user`, `overview_collector_token`, and `overview_user_snapshot` tables
+   automatically.
+
+An earlier single-user deployment also has an `overview_published_snapshot` table.
+Accounts neither read nor drop it; publish once under an account to repopulate.
+
+### Onboard a developer
+
+Everything below is done by the developer whose data it is. Nobody needs access to
+anyone else's machine, and no administrator hands out a credential.
+
+1. **Sign in.** Open the Vercel URL and choose *Continue with GitHub*.
+2. **Mint a collector token.** Go to *Account*, name the machine, and press
+   *Create token*. The token is shown once and stored only as a SHA-256 digest; it is
+   scoped to that one account and cannot open a dashboard. Create one per machine and
+   revoke it if the machine is lost.
+3. **Configure the CLI**, using the two exported lines the page shows:
 
 ```bash
-export OVERVIEW_PUBLISH_TOKEN='the-random-publish-token'
-# Optional instead of publish.endpoint in overview.config.json:
+node dist/cli.js init --repo ~/src/one-repo --repo ~/src/another
+export OVERVIEW_PUBLISH_TOKEN='ovp_...'
 export OVERVIEW_PUBLISH_URL='https://your-overview.vercel.app/api/publish'
+```
 
+4. **Check `identity.gitEmails`** in `overview.config.json`, and mark work
+   repositories `"hostedDetail": "redacted"` before publishing anything.
+5. **Sync and publish.**
+
+```bash
 node dist/cli.js sync
 node dist/cli.js publish
 ```
 
-Open the Vercel HTTPS URL on your phone and sign in. Dashboard access uses a signed,
-30-day, `Secure`, `HttpOnly`, `SameSite=Lax` cookie; it does not accept the publish
-token. The publish API accepts only the bearer token and cannot create a dashboard
-session.
+6. **Read the dashboard.** The Vercel URL now shows that account's summaries and no
+   one else's.
+
+Dashboard access uses a signed, 30-day, `Secure`, `HttpOnly`, `SameSite=Lax` cookie
+naming one account; it does not accept a collector token. The publish API accepts only
+a collector token, resolves it to the account that created it, and cannot open a
+dashboard session.
 
 The command below is ready to place in a local cron or systemd timer when desired;
 OverView itself does not schedule or collect anything in the cloud:
@@ -218,11 +255,13 @@ src/
   store/      SQLite. writes.ts is the only path in; reads.ts the only path out.
   metrics/    Windows, statistics, and the summary the dashboard eats.
   publish/    Build 7/30/90 summaries, redact them, and send the HTTPS publication.
-  hosted/     Shared hosted authentication and the Neon singleton snapshot store.
+  hosted/     Hosted accounts: sessions, collector tokens, GitHub identity, routes,
+              the HostedStore contract and its Neon implementation.
   server/     Loopback HTTP: /api/summary and the static page.
   web/        The dashboard. Its only contract is the ActivitySummary JSON.
-api/          Vercel publish, authenticated read, login, and logout functions.
-middleware.ts Protects hosted pages and summary data with the dashboard session.
+api/          Vercel functions: GitHub sign-in, publish, authenticated read,
+              collector tokens, and sign-out. Thin wiring over hosted/routes.ts.
+middleware.ts Protects hosted pages, summary data and tokens with the session.
 ```
 
 The boundaries are one-directional: `ingest` and `metrics` both depend on `domain` and
@@ -273,6 +312,11 @@ App, or Linear OAuth flow.
 - **Per-issue contributions are window-scoped.** A completed issue lists the
   landed PRs and authored commits from the same dashboard window that named it;
   work outside the window does not appear under it.
+- **An account holds one current snapshot.** Publishing replaces the previous 7/30/90
+  set for that account; the hosted mirror keeps no history and cannot be queried
+  across accounts.
+- **Accounts cannot be deleted from the UI.** Removing one means deleting its
+  `overview_user` row, which cascades to its tokens and snapshot.
 
 ## Development
 

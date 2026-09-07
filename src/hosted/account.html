@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Overview — collector tokens</title>
+    <style>
+      :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
+      body { margin: 0; padding: 2rem 1.25rem 4rem; background: #111827; color: #f9fafb; }
+      main { width: min(46rem, 100%); margin: 0 auto; }
+      header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .75rem; margin-bottom: 2rem; }
+      h1 { margin: 0; font-size: 1.5rem; }
+      h2 { margin: 2rem 0 .5rem; font-size: 1.1rem; }
+      p { margin: 0 0 1rem; color: #cbd5e1; line-height: 1.55; }
+      a { color: #7dd3fc; }
+      .who { color: #94a3b8; font-size: .9rem; }
+      .row { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; }
+      input[type="text"] { flex: 1 1 12rem; min-height: 2.5rem; padding: .45rem .7rem; border-radius: .5rem; border: 1px solid #64748b; background: #0f172a; color: #fff; font: inherit; }
+      button { min-height: 2.5rem; padding: 0 1rem; border-radius: .5rem; border: 0; background: #38bdf8; color: #082f49; font: inherit; font-weight: 700; cursor: pointer; }
+      button.secondary { background: transparent; border: 1px solid #64748b; color: #e2e8f0; font-weight: 500; }
+      table { width: 100%; border-collapse: collapse; margin-top: .5rem; }
+      th, td { padding: .55rem .5rem; text-align: left; border-bottom: 1px solid #334155; font-size: .9rem; }
+      th { color: #94a3b8; font-weight: 600; }
+      code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      pre { overflow-x: auto; padding: .9rem 1rem; border-radius: .6rem; background: #0f172a; border: 1px solid #334155; font-size: .85rem; line-height: 1.6; }
+      .fresh { margin: 1rem 0 0; padding: 1rem; border: 1px solid #0e7490; border-radius: .7rem; background: #083344; }
+      .fresh strong { color: #a5f3fc; }
+      .error { padding: .7rem .85rem; border: 1px solid #7f1d1d; border-radius: .55rem; background: #450a0a; color: #fecaca; font-size: .9rem; }
+      [hidden] { display: none; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Collector tokens</h1>
+          <p class="who" id="who"></p>
+        </div>
+        <div class="row">
+          <a href="/">Dashboard</a>
+          <form method="post" action="/api/logout">
+            <button type="submit" class="secondary">Sign out</button>
+          </form>
+        </div>
+      </header>
+
+      <p id="error" class="error" hidden></p>
+
+      <p>
+        A collector token lets one machine publish summaries to your account and does
+        nothing else: it cannot open this dashboard, and it cannot read anyone else's
+        data. Create one per machine, and revoke it if that machine is lost.
+      </p>
+
+      <form class="row" id="create">
+        <input type="text" id="name" name="name" maxlength="60" placeholder="laptop" aria-label="Token name" />
+        <button type="submit">Create token</button>
+      </form>
+
+      <div class="fresh" id="fresh" hidden>
+        <p><strong>Copy this now.</strong> It is shown once and stored only as a hash.</p>
+        <pre id="fresh-commands"></pre>
+      </div>
+
+      <h2>Your tokens</h2>
+      <table>
+        <thead>
+          <tr><th>Name</th><th>Token</th><th>Created</th><th>Last used</th><th></th></tr>
+        </thead>
+        <tbody id="tokens"></tbody>
+      </table>
+    </main>
+    <script type="module" src="/account.js"></script>
+  </body>
+</html>
