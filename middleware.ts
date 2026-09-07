@@ -5,6 +5,7 @@ export const config = {
   matcher: [
     "/",
     "/account",
+    "/account.html",
     "/web/:path*",
     "/report/:path*",
     "/domain/:path*",
