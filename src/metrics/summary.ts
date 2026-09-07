@@ -124,6 +124,8 @@ export interface ActivitySummary {
   readonly generatedAt: string;
   /** Set by the hosted read API. Local summaries intentionally omit it. */
   readonly publishedAt?: string;
+  /** Set by the hosted read API to name the signed-in account. Local reads omit it. */
+  readonly account?: { readonly githubLogin: string };
   readonly window: {
     readonly days: number;
     readonly startDay: string;

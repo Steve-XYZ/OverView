@@ -1,14 +1,22 @@
 import { next } from "@vercel/functions";
-import { hasValidSession, requiredSecret, SESSION_SECRET_ENV } from "./src/hosted/auth.ts";
+import { readSession, requiredSecret, SESSION_SECRET_ENV } from "./src/hosted/auth.ts";
 
 export const config = {
-  matcher: ["/", "/web/:path*", "/report/:path*", "/domain/:path*", "/api/summary"],
+  matcher: [
+    "/",
+    "/account",
+    "/web/:path*",
+    "/report/:path*",
+    "/domain/:path*",
+    "/api/summary",
+    "/api/tokens",
+  ],
 };
 
 export default async function middleware(request: Request): Promise<Response> {
   let authenticated = false;
   try {
-    authenticated = await hasValidSession(request, requiredSecret(SESSION_SECRET_ENV));
+    authenticated = (await readSession(request, requiredSecret(SESSION_SECRET_ENV))) !== null;
   } catch {
     authenticated = false;
   }

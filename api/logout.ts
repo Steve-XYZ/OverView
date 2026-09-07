@@ -1,14 +1,7 @@
-import { clearSessionCookie } from "../src/hosted/auth.ts";
+import { handleLogout } from "../src/hosted/routes.ts";
 
 export function POST(request: Request): Response {
-  return new Response(null, {
-    status: 303,
-    headers: {
-      location: new URL("/login", request.url).toString(),
-      "set-cookie": clearSessionCookie(),
-      "cache-control": "no-store",
-    },
-  });
+  return handleLogout(request);
 }
 
 export function GET(request: Request): Response {

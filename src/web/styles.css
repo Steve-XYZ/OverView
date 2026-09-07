@@ -105,6 +105,17 @@ h2 {
   font-size: 12px;
 }
 
+.masthead-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.account-link {
+  text-decoration: none;
+  white-space: nowrap;
+}
+
 .theme-toggle,
 .view-toggle button,
 .segmented button {
