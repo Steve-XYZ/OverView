@@ -65,6 +65,13 @@ async function load(days: number): Promise<void> {
 
   try {
     const response = await fetch(`/api/summary?days=${days}`);
+    // A hosted account exists from first sign-in, before its collector has published
+    // anything. That empty state is the first thing a new account sees, so it needs
+    // the next step named rather than a status code at the foot of the page.
+    if (response.status === 404) {
+      showAwaitingFirstPublication();
+      return;
+    }
     if (!response.ok) throw new Error(`The server answered ${response.status}.`);
     currentSummary = (await response.json()) as ActivitySummary;
     render(currentSummary);
@@ -73,6 +80,20 @@ async function load(days: number): Promise<void> {
   } finally {
     main.setAttribute("aria-busy", "false");
   }
+}
+
+/**
+ * Nothing has been published under this account yet. Reveals the account link,
+ * because until `render` runs there is no visible route to the page that mints the
+ * first collector token.
+ */
+function showAwaitingFirstPublication(): void {
+  byId("scope-line").textContent =
+    "Nothing published yet. Create a collector token on the Account page, then run " +
+    "`overview sync` and `overview publish` on the machine you work from.";
+  byId("sync-line").textContent = "";
+  byId("account-link").hidden = false;
+  byId("warnings").textContent = "";
 }
 
 function render(summary: ActivitySummary): void {
