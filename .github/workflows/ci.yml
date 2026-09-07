@@ -23,6 +23,9 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
+          # setup-node reads packageManager and would look for pnpm before
+          # corepack has installed it. Four dependencies is not worth a cache.
+          package-manager-cache: false
 
       # package.json pins the pnpm version; corepack installs exactly that one.
       - run: corepack enable
