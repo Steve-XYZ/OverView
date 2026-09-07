@@ -5,6 +5,11 @@
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "types": ["node"],
+    // Vercel compiles each api/ function through a generated tsconfig in a temp
+    // directory that extends this one. Relative paths in an extended config resolve
+    // against the file they are written in, so naming the type root here is what lets
+    // that build resolve @types/node instead of failing with TS2688.
+    "typeRoots": ["./node_modules/@types"],
 
     "strict": true,
     "noUncheckedIndexedAccess": true,
