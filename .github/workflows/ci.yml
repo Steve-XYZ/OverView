@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Typecheck, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          # setup-node reads packageManager and would look for pnpm before
+          # corepack has installed it. Four dependencies is not worth a cache.
+          package-manager-cache: false
+
+      # package.json pins the pnpm version; corepack installs exactly that one.
+      - run: corepack enable
+
+      - run: pnpm install --frozen-lockfile
+
+      # tsc over src+test and over api+middleware, then the node:test suite.
+      - run: pnpm run check
+
+      # The command Vercel runs, so a deploy cannot break in a way CI missed.
+      - run: pnpm run build:hosted
