@@ -164,6 +164,10 @@ h2 {
 
 main {
   display: grid;
+  /* The chart svg carries a viewBox but no intrinsic size, so an `auto` track sizes
+     itself to the svg's content and the card grows far past the viewport. Pinning the
+     column minimum to 0 keeps every card inside the grid. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   max-width: 1180px;
   margin: 0 auto;
