@@ -184,7 +184,8 @@ wrote it, and a publication may only delete rows carrying its own. Concretely:
   laptop without `LINEAR_API_KEY` cannot blank the section the desktop filled.
 - Revoking a token does not delete what that collector published. The id is a label
   recording who last claimed a record, not an owner it depends on, and it carries no
-  foreign key for that reason.
+  foreign key for that reason. Its publication row does go, so a machine you have
+  revoked stops reporting its own sync time and Linear status for the account.
 
 The transaction runs even when the content id is unchanged. A collector that
 short-circuited could never take back ownership of a record another collector had

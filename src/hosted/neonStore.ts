@@ -127,12 +127,27 @@ export function neonStore(): HostedStore {
       return rows.map(toToken);
     },
 
+    /**
+     * Revoking a credential retires the collector with it.
+     *
+     * The facts it published stay: they are the account's history, which is why they
+     * carry no foreign key to the token. Its publication row does not, because that
+     * row is what tells the dashboard when this machine last synced and whether it
+     * had a Linear key. A machine you have revoked should not still answer for the
+     * account.
+     */
     async deleteToken(userId: string, tokenId: string): Promise<boolean> {
       const sql = await ready();
       const rows = await sql`
-        DELETE FROM overview_collector_token
-        WHERE id = ${tokenId} AND user_id = ${userId}
-        RETURNING id
+        WITH removed AS (
+          DELETE FROM overview_collector_token
+          WHERE id = ${tokenId} AND user_id = ${userId}
+          RETURNING id
+        ), retired AS (
+          DELETE FROM overview_ledger_publication
+          WHERE user_id = ${userId} AND collector_id IN (SELECT id FROM removed)
+        )
+        SELECT id FROM removed
       ` as unknown as readonly { readonly id: string }[];
       return rows.length > 0;
     },

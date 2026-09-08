@@ -139,6 +139,8 @@ export function memoryStore(): MemoryStore {
       const token = tokens.get(tokenId);
       if (token === undefined || token.userId !== userId) return Promise.resolve(false);
       tokens.delete(tokenId);
+      // The facts it published stay; its diagnostics stop speaking for the account.
+      ledgers.get(userId)?.collectors.delete(tokenId);
       return Promise.resolve(true);
     },
 

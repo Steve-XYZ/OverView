@@ -323,6 +323,14 @@ describe("two collectors on one account", () => {
     assert.equal(summary.totals.commitsAuthored, 5);
     assert.equal((await publish(store, second, buildLedgerPublication(desktopDb.db, DESKTOP_CONFIG, NOW))).status, 401);
     assert.equal((await readSummary(store, account.cookie, 7)).totals.commitsAuthored, 5);
+
+    // Its diagnostics stop answering for the account, though. The desktop published
+    // last and has no Linear key; with it revoked, the laptop's status is the only
+    // one left, and the laptop does sync Linear.
+    assert.equal(summary.linear.syncStatus, "synced");
+    assert.equal(summary.linear.completedIssuesTotal, 1);
+    const head = await store.getLedgerHead(account.userId);
+    assert.equal(head?.collector.linearSyncStatus, "synced");
     laptopDb.db.close();
     desktopDb.db.close();
   });
