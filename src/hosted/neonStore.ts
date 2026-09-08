@@ -167,7 +167,6 @@ export function neonStore(): HostedStore {
         )
         ON CONFLICT (user_id) DO UPDATE SET
           schema_version = EXCLUDED.schema_version,
-          collector_id = EXCLUDED.collector_id,
         publication_id = EXCLUDED.publication_id,
           published_at = EXCLUDED.published_at,
           snapshot = EXCLUDED.snapshot
@@ -394,7 +393,6 @@ function writeLedger(
       )
       ON CONFLICT (user_id, collector_id) DO UPDATE SET
         schema_version = EXCLUDED.schema_version,
-        collector_id = EXCLUDED.collector_id,
         publication_id = EXCLUDED.publication_id,
         generated_at = EXCLUDED.generated_at,
         published_at = EXCLUDED.published_at,
@@ -418,7 +416,6 @@ function writeLedger(
       )
       ON CONFLICT (user_id) DO UPDATE SET
         schema_version = EXCLUDED.schema_version,
-        collector_id = EXCLUDED.collector_id,
         publication_id = EXCLUDED.publication_id,
         published_at = EXCLUDED.published_at,
         snapshot = EXCLUDED.snapshot
