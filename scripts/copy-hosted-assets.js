@@ -13,6 +13,7 @@ const files = [
   ["src/hosted/login.html", "public/login.html"],
   ["dist/hosted/login.js", "public/login.js"],
   ["src/hosted/account.html", "public/account.html"],
+  ["src/web/icon.svg", "public/icon.svg"],
   ["dist/hosted/account.js", "public/account.js"],
 ];
 

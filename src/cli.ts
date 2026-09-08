@@ -7,7 +7,7 @@
  *   overview repo list                 show configured repositories
  *   overview sync [--days N] [--only]  ingest git and GitHub into the local database
  *   overview report [--days N]         print the metrics
- *   overview publish                   upload redacted 7/30/90-day summaries
+ *   overview publish                   upload redacted facts and 7/30/90-day summaries
  *   overview serve [--port N]          serve the dashboard on the loopback interface
  */
 
@@ -34,8 +34,9 @@ import { resolveWebRoot, startServer } from "./server/server.ts";
 import { assertGitRepository, detectGithubSlug, readConfiguredEmails } from "./ingest/git/gitCli.ts";
 import { ghAuthenticated, ghAvailable, viewerLogin } from "./ingest/github/ghCli.ts";
 import {
+  buildLedgerPublication,
   buildPublication,
-  publishSnapshots,
+  publishToHost,
   PUBLISH_ENDPOINT_ENV,
   PUBLISH_TOKEN_ENV,
 } from "./publish/publish.ts";
@@ -47,13 +48,14 @@ const USAGE = `overview — what did I ship?
   overview repo list
   overview sync [--days N] [--only <text>] [--no-github] [--no-linear]
   overview report [--days N]
-  overview publish [--endpoint <https-url>]
+  overview publish [--endpoint <https-url>] [--snapshot-only]
   overview serve [--port N] [--host H]
 
 Options
   --config <path>   Use a specific config file
   --days N          Window in days (default ${DEFAULT_WINDOW_DAYS}); for sync, how far back to ingest
   --endpoint <url>  Override publish.endpoint for this publication
+  --snapshot-only   Publish the three summaries without the normalized facts
 `;
 
 await run(process.argv.slice(2));
@@ -101,7 +103,11 @@ async function run(argv: string[]): Promise<void> {
 async function commandPublish(argv: string[]): Promise<void> {
   const { values } = parseArgs({
     args: argv,
-    options: { config: { type: "string" }, endpoint: { type: "string" } },
+    options: {
+      config: { type: "string" },
+      endpoint: { type: "string" },
+      "snapshot-only": { type: "boolean" },
+    },
     allowPositionals: false,
   });
 
@@ -120,13 +126,26 @@ async function commandPublish(argv: string[]): Promise<void> {
 
   const db = openDatabase(databasePath);
   try {
-    const publication = buildPublication(db, config);
-    const result = await publishSnapshots(endpoint, token, publication);
-    process.stdout.write(
-      result.alreadyCurrent
-        ? `Hosted dashboard is already current (${result.publishedAt}).\n`
-        : `Published 7, 30 and 90 day summaries at ${result.publishedAt}.\n`,
-    );
+    const snapshotOnly = values["snapshot-only"] === true;
+    const publication = snapshotOnly
+      ? buildPublication(db, config)
+      : buildLedgerPublication(db, config);
+    const result = await publishToHost(endpoint, token, publication);
+
+    if (result.alreadyCurrent) {
+      process.stdout.write(`Hosted dashboard is already current (${result.publishedAt}).\n`);
+    } else {
+      process.stdout.write(`Published 7, 30 and 90 day summaries at ${result.publishedAt}.\n`);
+    }
+    if (!snapshotOnly && "facts" in publication) {
+      const { facts, coverage } = publication;
+      process.stdout.write(
+        `  ledger ${coverage.fromDay}..${coverage.toDay}: ` +
+          `${facts.commits.length} commits, ${facts.pullRequests.length} pull requests, ` +
+          `${facts.reviews.length} reviews, ${facts.linearIssues.length} Linear issues, ` +
+          `${facts.pullRequestLinks.length + facts.commitLinks.length} issue links\n`,
+      );
+    }
   } finally {
     db.close();
   }

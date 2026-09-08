@@ -31,6 +31,7 @@ export interface CommitRow {
   readonly excluded_additions: number;
   readonly excluded_deletions: number;
   readonly source_url: string | null;
+  readonly recorded_at: string;
 }
 
 export interface PullRequestRow {
@@ -45,6 +46,7 @@ export interface PullRequestRow {
   readonly created_at_ms: number;
   readonly merged_at: string | null;
   readonly merged_at_ms: number | null;
+  readonly updated_at: string;
   readonly additions: number;
   readonly deletions: number;
   readonly changed_files: number;
@@ -52,6 +54,7 @@ export interface PullRequestRow {
   readonly merge_commit_sha: string | null;
   readonly source_id: string;
   readonly source_url: string | null;
+  readonly recorded_at: string;
 }
 
 export interface ReviewRow {
@@ -62,7 +65,9 @@ export interface ReviewRow {
   readonly state: string;
   readonly submitted_at: string;
   readonly submitted_at_ms: number;
+  readonly source_id: string;
   readonly source_url: string | null;
+  readonly recorded_at: string;
 }
 
 export interface LinearIssueRow {
@@ -79,6 +84,7 @@ export interface LinearIssueRow {
   readonly team_key: string | null;
   readonly source_id: string;
   readonly source_url: string | null;
+  readonly recorded_at: string;
 }
 
 export interface RepositoryRow {
@@ -91,11 +97,11 @@ export interface RepositoryRow {
   readonly last_synced_at: string | null;
 }
 
-export interface RepositoryCommitScopeRow {
+/** One non-merge commit, reduced to what per-day observed volume needs. */
+export interface CommitDayRow {
   readonly repository_key: string;
-  readonly commits_observed: number;
-  readonly commits_matched: number;
-  readonly author_emails: string;
+  readonly authored_at_ms: number;
+  readonly author_email: string;
 }
 
 export interface SyncRunRow {
@@ -114,15 +120,15 @@ const COMMIT_COLUMNS = `
   c.sha, c.author_name, c.author_email, c.authored_at, c.authored_at_ms,
   c.committed_at, c.committed_at_ms, c.subject,
   c.additions, c.deletions, c.files_changed,
-  c.excluded_additions, c.excluded_deletions, c.source_url`;
+  c.excluded_additions, c.excluded_deletions, c.source_url, c.recorded_at`;
 
 const PR_COLUMNS = `
   r.key  AS repository_key,
   r.slug AS repository_slug,
   p.number, p.title, p.state, p.is_draft, p.author_login,
-  p.created_at, p.created_at_ms, p.merged_at, p.merged_at_ms,
+  p.created_at, p.created_at_ms, p.merged_at, p.merged_at_ms, p.updated_at,
   p.additions, p.deletions, p.changed_files, p.head_ref, p.merge_commit_sha,
-  p.source_id, p.source_url`;
+  p.source_id, p.source_url, p.recorded_at`;
 
 /**
  * Non-merge commits authored by the user inside the range.
@@ -148,29 +154,23 @@ export function readCommitsAuthored(db: Db, range: TimeRange, identity: Identity
     .all(range.fromMs, range.toMs, ...identity.gitEmails) as unknown as CommitRow[];
 }
 
-/** Per-repository commit and author scope, before identity filtering. */
-export function readRepositoryCommitScope(
-  db: Db,
-  range: TimeRange,
-  identity: Identity,
-): RepositoryCommitScopeRow[] {
-  const matchExpression =
-    identity.gitEmails.length === 0
-      ? "0"
-      : `SUM(CASE WHEN c.author_email IN (${placeholders(identity.gitEmails.length)}) THEN 1 ELSE 0 END)`;
+/**
+ * Every non-merge commit in range, by anyone, as the raw material for per-day
+ * observed volume.
+ *
+ * Grouping happens above this call rather than in SQL because a calendar day
+ * depends on the viewer's zone, which SQLite has no way to apply.
+ */
+export function readCommitDayRows(db: Db, range: TimeRange): CommitDayRow[] {
   return db
     .prepare(
-      `SELECT r.key AS repository_key,
-              COUNT(*) AS commits_observed,
-              ${matchExpression} AS commits_matched,
-              GROUP_CONCAT(DISTINCT c.author_email) AS author_emails
+      `SELECT r.key AS repository_key, c.authored_at_ms, c.author_email
        FROM commit_event c JOIN repository r ON r.id = c.repository_id
        WHERE c.is_merge = 0
          AND c.authored_at_ms >= ? AND c.authored_at_ms <= ?
-       GROUP BY r.key
-       ORDER BY r.key`,
+       ORDER BY r.key, c.authored_at_ms`,
     )
-    .all(...identity.gitEmails, range.fromMs, range.toMs) as unknown as RepositoryCommitScopeRow[];
+    .all(range.fromMs, range.toMs) as unknown as CommitDayRow[];
 }
 
 /** Pull requests the user opened inside the range. */
@@ -217,7 +217,7 @@ export function readReviewsGiven(db: Db, range: TimeRange, identity: Identity): 
     .prepare(
       `SELECT r.key AS repository_key, r.slug AS repository_slug,
               v.pull_request_number, v.pull_request_source_id, v.state,
-              v.submitted_at, v.submitted_at_ms, v.source_url
+              v.submitted_at, v.submitted_at_ms, v.source_id, v.source_url, v.recorded_at
        FROM review v JOIN repository r ON r.id = v.repository_id
        WHERE v.reviewer_login = ? COLLATE NOCASE
          AND v.submitted_at_ms >= ? AND v.submitted_at_ms <= ?
@@ -226,16 +226,26 @@ export function readReviewsGiven(db: Db, range: TimeRange, identity: Identity): 
     .all(identity.githubLogin, range.fromMs, range.toMs) as unknown as ReviewRow[];
 }
 
-/** Titles for the pull requests a set of reviews points at, for display. */
-export function readPullRequestTitles(db: Db, sourceIds: readonly string[]): Map<string, string> {
-  if (sourceIds.length === 0) return new Map();
-  const rows = db
+/**
+ * Pull requests by source id, for the ones a set of reviews points at.
+ *
+ * A reviewed pull request is usually somebody else's; it is read so its title can
+ * be shown beside the review, and for no other metric.
+ */
+export function readPullRequestsById(
+  db: Db,
+  sourceIds: readonly string[],
+): PullRequestRow[] {
+  const ids = [...new Set(sourceIds)];
+  if (ids.length === 0) return [];
+  return db
     .prepare(
-      `SELECT source_id, title FROM pull_request
-       WHERE source_id IN (${placeholders(sourceIds.length)})`,
+      `SELECT ${PR_COLUMNS}
+       FROM pull_request p JOIN repository r ON r.id = p.repository_id
+       WHERE p.source_id IN (${placeholders(ids.length)})
+       ORDER BY r.key, p.number`,
     )
-    .all(...sourceIds) as unknown as { source_id: string; title: string }[];
-  return new Map(rows.map((row) => [row.source_id, row.title]));
+    .all(...ids) as unknown as PullRequestRow[];
 }
 
 export function readRepositories(db: Db): RepositoryRow[] {
@@ -265,7 +275,7 @@ export function readLinearIssues(db: Db): LinearIssueRow[] {
       .prepare(
         `SELECT identifier, title, state_name, state_type,
                 created_at, created_at_ms, updated_at, updated_at_ms,
-                completed_at, completed_at_ms, team_key, source_id, source_url
+                completed_at, completed_at_ms, team_key, source_id, source_url, recorded_at
          FROM linear_issue ORDER BY identifier`,
       )
       .all() as unknown as LinearIssueRow[];
@@ -281,7 +291,7 @@ export function readLinearIssuesCompleted(db: Db, range: TimeRange): LinearIssue
       .prepare(
         `SELECT identifier, title, state_name, state_type,
                 created_at, created_at_ms, updated_at, updated_at_ms,
-                completed_at, completed_at_ms, team_key, source_id, source_url
+                completed_at, completed_at_ms, team_key, source_id, source_url, recorded_at
          FROM linear_issue
          WHERE completed_at_ms IS NOT NULL
            AND completed_at_ms >= ? AND completed_at_ms <= ?

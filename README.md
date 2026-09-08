@@ -5,8 +5,9 @@ last 7, 30 or 90 days?**
 
 It reads your local git checkouts and the GitHub CLI you have already authenticated,
 stores the result in a SQLite file on your machine, and serves one page on the
-loopback interface. An optional hosted mirror can receive redacted, already-computed
-dashboard summaries; collection and company credentials stay local.
+loopback interface. An optional hosted mirror can receive redacted normalized
+records of that activity and compute any window from them; collection and company
+credentials stay local.
 
 ## Requirements
 
@@ -54,7 +55,7 @@ node dist/cli.js sync
 | `repo list` | Show what is configured |
 | `sync [--days N] [--only <text>] [--no-github] [--no-linear]` | Ingest into the local database |
 | `report [--days N] [--json]` | Print the metrics |
-| `publish [--endpoint <https-url>]` | Redact and upload the current 7/30/90-day summaries |
+| `publish [--endpoint <https-url>] [--snapshot-only]` | Redact and upload normalized records plus the 7/30/90-day summaries |
 | `serve [--port N] [--host H]` | Serve the dashboard |
 
 `sync` is idempotent. Every record is upserted on the source's own identifier, and
@@ -66,21 +67,167 @@ therefore replace prior history instead of accumulating it.
 The hosted path is deliberately one-way:
 
 ```text
-local Git / gh / Linear -> local SQLite -> metrics -> redaction -> HTTPS publish
-                                                               -> Vercel + Neon
+local Git / gh / Linear -> local SQLite -> facts -> redaction -> HTTPS publish
+                                                             -> Vercel + Neon -> metrics
 ```
 
 Vercel never receives GitHub or Linear credentials, source code, diffs, or raw
-collector records. Neon stores, per account, one current JSONB publication containing
-the 7, 30, and 90-day `ActivitySummary` objects plus a schema version, content ID, and
-server publication time. Publishing the same content again is a no-op, while newer
-content replaces that account's row. A failed request does not write to SQLite.
+collector records. Nothing in the cloud can reach a repository, and no hosted code
+calls GitHub or Linear.
 
 The deployment holds accounts, not one shared dashboard. Each developer signs in with
 GitHub, mints their own collector token, and sees only what their own collector
 published. GitHub is used for identity alone: the authorize request asks for no
 scopes, and the access token behind it is read once to learn your login and is never
-stored. Nothing in the cloud can reach a repository.
+stored.
+
+### One summarizer, two stores
+
+The hosted dashboard does not reimplement any metric. `metrics/summary.ts` exports a
+pure `summarize(facts, window)`, and both sides call it:
+
+```text
+SQLite  -> store/facts.ts -> LedgerFacts -> summarize() -> local report
+Neon    -> neonStore.ts   -> LedgerFacts -> summarize() -> hosted dashboard
+```
+
+`domain/facts.ts` defines the record shapes in the middle, and those shapes are also
+the publication contract. A definition can only change in one place, so the hosted
+7/30/90 numbers cannot drift from the local ones.
+
+### What Neon stores
+
+One row per account per record, keyed so that repeated publication updates in place.
+Every table's primary key starts with `user_id`, so isolation comes from the key
+rather than from each query remembering to filter. Every row also carries the
+`collector_id` that last wrote it, which is what scopes deletion; see below.
+
+| Table | Key after `user_id` | Holds |
+|---|---|---|
+| `overview_ledger_publication` | `collector_id` | One row per collector: coverage range, its time zone, identity login, last sync status and warnings |
+| `overview_ledger_repository` | `repository_key` | Published repository identity, walked ref, head |
+| `overview_ledger_repository_day` | `repository_key, day` | Commits observed and matched that local day, addresses seen |
+| `overview_ledger_commit` | `sha` | One authored commit: timestamps, change volume, subject |
+| `overview_ledger_pull_request` | `repository_key, number` | State, timestamps, change volume, merge commit |
+| `overview_ledger_review` | `source_id` | One review submission |
+| `overview_ledger_linear_issue` | `source_id` | A completed issue, its state and team |
+| `overview_ledger_pull_request_link` | `repository_key, number, issue_identifier` | Which field named the issue |
+| `overview_ledger_commit_link` | `sha, issue_identifier` | Subject evidence for a commit link |
+
+A commit is keyed by SHA alone. The same commit reachable from a fork and its
+upstream is one fact, which matches the local rule that a duplicate SHA counts once.
+Per-repository counts still see both copies, through the per-day table, so the
+"duplicate commit copy" warning survives the trip.
+
+Timestamps are stored as epoch milliseconds and as the ISO text the collector wrote.
+Neither becomes a `timestamptz`, because re-rendering a timestamp would change the
+string the dashboard prints. For ad-hoc SQL, wrap the column:
+
+```sql
+SELECT to_timestamp(authored_at_ms / 1000.0) AS authored_at, subject
+FROM overview_ledger_commit WHERE user_id = $1 ORDER BY authored_at_ms DESC LIMIT 20;
+```
+
+### The publication contract
+
+`overview publish` sends one JSON document over HTTPS with a collector token in the
+`Authorization` header. Version 2 carries five things:
+
+- `schemaVersion: 2`.
+- `publicationId`, a SHA-256 over the records and the covered days. The server
+  recomputes it and refuses a body that does not match, so a truncated or spliced
+  payload is rejected rather than half-stored.
+- `coverage`, the range this publication restates in full.
+- `facts`, the normalized records above.
+- `snapshots`, the same three `ActivitySummary` objects version 1 carried.
+
+Coverage runs back `max(sync.sinceDays, 90)` days, aligned to local midnight, and
+forward to the moment of publication. Inside it the publication is the whole truth:
+records it restates are updated, and records the account held that it no longer
+mentions are deleted. That is how a rebase, a retitled pull request, or a reopened
+issue reaches the hosted numbers. Outside coverage, earlier facts are left alone, so
+the ledger keeps history the local database has since dropped.
+
+Every record carries the current `publication_id`, which is what makes the two rules
+above one mechanism: upsert everything received, then delete what is inside coverage
+and still carries an older id. It is the same thing `deleteUnseenCommits` does to the
+local database after a force-push. Removing a repository from your config deletes its
+records at any age, mirroring the local `ON DELETE CASCADE`.
+
+Republishing without syncing is a no-op in state and in what the response says
+(`alreadyCurrent`, with the publication time held steady). On my own database a
+180-day publication is 516 kB of the 3.5 MB limit, holding 390 commits, 343 pull
+requests, 158 reviews and 580 repository-days across 24 repositories.
+
+### One account, several collectors
+
+An account can mint a token per machine, and each machine publishes whatever is in
+its own config. That makes "delete what this publication did not mention" dangerous
+if taken account-wide: a laptop watching two repositories would wipe the desktop's
+four, because its publication is silent about them.
+
+So authority is scoped to the credential. Facts stay owned by the account and
+deduplicated by source identity, but every row records the `collector_id` that last
+wrote it, and a publication may only delete rows carrying its own. Concretely:
+
+- Two collectors with different repositories each correct their own half.
+- A commit both machines can see is one row. Whichever published last owns it, and
+  that machine's next publication is the one that can remove it. If it does, and the
+  other machine still has the commit, the other machine's next publication restores
+  it.
+- Dropping a repository removes that collector's records for it, but the repository
+  row itself survives while another collector still has facts filed under it, so a
+  shared repository never loses the name its commits are displayed under.
+- Diagnostics are per machine and the dashboard is one page, so they are merged: the
+  newest publication sets the time zone, the sync line reports the most recent run,
+  warnings are the union, and Linear counts as synced if any collector syncs it. A
+  laptop without `LINEAR_API_KEY` cannot blank the section the desktop filled.
+- Revoking a token does not delete what that collector published. The id is a label
+  recording who last claimed a record, not an owner it depends on, and it carries no
+  foreign key for that reason. Its publication row does go, so a machine you have
+  revoked stops reporting its own sync time and Linear status for the account.
+
+The transaction runs even when the content id is unchanged. A collector that
+short-circuited could never take back ownership of a record another collector had
+claimed, so a removal by that other collector would stand uncorrected. Re-running an
+idempotent write is the cheaper mistake.
+
+### Reconciliation
+
+The local database is the oracle. Each publication carries both the facts and the
+summaries the local collector computed from the same database, so the two can be
+compared directly. Against my own 24 repositories, 13 of them redacted, the hosted
+numbers derived from stored facts match the local redacted summaries exactly for 7,
+30 and 90 days: 10/42/291 commits, 15/55/185 landed pull requests, 9/62/118 reviews.
+
+Two checks keep it that way. `test/ledgerFacts.test.ts` asserts a commutation, that
+redacting facts and then summarising gives the same object as summarising and then
+redacting the summary, which is the property that makes the hosted dashboard
+reproduce the local report by construction. `test/ledgerHosted.test.ts` publishes
+through the real route and compares each window against the snapshot in the same
+publication. You can run the same comparison against a live deployment, because
+`/api/summary?source=snapshot` still serves the pre-ledger path:
+
+```bash
+curl -s --cookie "$COOKIE" 'https://your-overview.vercel.app/api/summary?days=30&source=ledger'
+curl -s --cookie "$COOKIE" 'https://your-overview.vercel.app/api/summary?days=30&source=snapshot'
+```
+
+Each response names the store it came from in a `source` field. The dashboard reads
+whichever is available, preferring the ledger.
+
+### Fallback and migration
+
+There is no flag day. The first `overview publish` after this change writes both the
+ledger and the snapshot row, in one transaction, and creates the tables it needs on
+first use. Until then, an account that has only ever published version 1 keeps
+reading its snapshot.
+
+- A version 1 publication is still accepted, so an older collector keeps working.
+- `overview publish --snapshot-only` sends version 1 deliberately.
+- `GET /api/summary` prefers the ledger and falls back to the snapshot.
+- `?source=snapshot` forces the old path; `?source=ledger` returns 404 when no facts
+  have been published, rather than silently answering from the snapshot.
 
 ### Configure redaction
 
@@ -105,12 +252,35 @@ existing configs keep their behavior:
 
 For a redacted repository, the publisher keeps metric totals, repository identifier,
 PR number, issue identifier, and commit SHA, but clears URLs, commit subjects, PR and
-review titles, ref/head details, and observed author emails. It also clears a Linear
-issue's title and URL when that issue links to a redacted repository.
-`redactLinearDetails: true` clears every Linear title and URL, including issues with
-no repository contribution in the current window. Local paths and identity Git emails
-are never published, even for detailed repositories. These changes apply only to the
-copied payload; local reports and the loopback dashboard retain full detail.
+review titles, ref/head details, and observed author emails. `redactLinearDetails:
+true` clears every Linear title and URL. Local paths and identity Git emails are
+never published, even for detailed repositories. Redaction happens before
+serialization, so a cleared field never reaches Neon at all. Local reports and the
+loopback dashboard retain full detail.
+
+Two things about the fact ledger are worth knowing before you publish one.
+
+**A Linear issue's title is now judged once, not per window.** Previously the
+publisher blanked an issue's title when the window on screen contained a redacted
+repository's contribution to it. A stored fact has no window, so the rule became: if
+any of your published work on a redacted repository names the issue, its title and
+URL are never published. That redacts strictly more than before, and it closes the
+hole where a title reached the database as soon as the window moved.
+
+**Per-day observed volume covers other people's commits.** The dashboard's
+"yours / all" column and the addresses column are aggregates over everybody who
+committed to your repositories. To answer a range nobody asked for at publication
+time, those aggregates are published per repository per local day rather than per
+window. For a redacted repository that means a daily count of total activity leaves
+your machine where previously a single per-window count did. Author addresses stay
+empty for a redacted repository, as before, and no per-commit record for another
+person is ever published.
+
+Verified against my own configuration: of 202 redacted repository-days, all carry
+zero addresses; of 284 redacted commits, all have an empty subject and a null URL; of
+303 redacted pull requests, all have an empty title and a null URL; and
+`collector.identity.gitEmails` is empty while `gitEmailsConfigured` stays true so the
+hosted dashboard can still show the "no git emails configured" warning.
 
 ### Deploy Vercel and Neon
 
@@ -133,8 +303,7 @@ copied payload; local reports and the loopback dashboard retain full detail.
 
    Generate the session secret with `openssl rand -hex 32`. Do not prefix any secret
    with `NEXT_PUBLIC_` or commit it to a file. The first hosted request creates the
-   `overview_user`, `overview_collector_token`, and `overview_user_snapshot` tables
-   automatically.
+   account, token, snapshot, and `overview_ledger_*` tables in one transaction.
 
 An earlier single-user deployment also has an `overview_published_snapshot` table.
 Accounts neither read nor drop it; publish once under an account to repopulate.
@@ -227,7 +396,9 @@ id), `source_url`, `recorded_at` and the `sync_run_id` that fetched it. The
 run with its counts and warnings. Commit rows retain both author and committer dates.
 Linear issues live in `linear_issue` with the same provenance columns; the human
 identifier (`BOS-2422`) is the join key, and pull-request links keep whether they
-came from `pr_title` or `pr_branch`.
+came from `pr_title` or `pr_branch`. Published records keep `source_url` and
+`recorded_at` where redaction allows, plus the `publication_id` that last restated
+them, so a hosted figure traces back to one publication.
 
 That means any figure on the dashboard can be reconstructed from the database:
 
@@ -245,7 +416,7 @@ ORDER BY c.authored_at_ms DESC;
 
 ```
 src/
-  domain/     Provider-neutral records and time helpers. Depends on nothing.
+  domain/     Provider-neutral records, the fact contract, time helpers. Depends on nothing.
   config/     Load and validate overview.config.json.
   ingest/
     git/      Local checkout -> CommitRecord. Knows git; knows no SQL.
@@ -253,10 +424,11 @@ src/
     linear/   `api.linear.app` with LINEAR_API_KEY -> LinearIssueRecord. Separate collector.
     sync.ts   Decides what to run and hands records to the write layer.
   store/      SQLite. writes.ts is the only path in; reads.ts the only path out.
-  metrics/    Windows, statistics, and the summary the dashboard eats.
-  publish/    Build 7/30/90 summaries, redact them, and send the HTTPS publication.
-  hosted/     Hosted accounts: sessions, collector tokens, GitHub identity, routes,
-              the HostedStore contract and its Neon implementation.
+              facts.ts turns rows into the records metrics consume.
+  metrics/    Windows, statistics, and summarize(facts, window) for both stores.
+  publish/    Redact facts, build the versioned publication, send it over HTTPS.
+  hosted/     Hosted accounts and the fact ledger: sessions, collector tokens, GitHub
+              identity, routes, the HostedStore contract and its Neon implementation.
   server/     Loopback HTTP: /api/summary and the static page.
   web/        The dashboard. Its only contract is the ActivitySummary JSON.
 api/          Vercel functions: GitHub sign-in, publish, authenticated read,
@@ -312,9 +484,26 @@ App, or Linear OAuth flow.
 - **Per-issue contributions are window-scoped.** A completed issue lists the
   landed PRs and authored commits from the same dashboard window that named it;
   work outside the window does not appear under it.
-- **An account holds one current snapshot.** Publishing replaces the previous 7/30/90
-  set for that account; the hosted mirror keeps no history and cannot be queried
-  across accounts.
+- **A publication only corrects its own coverage.** Records older than
+  `max(sync.sinceDays, 90)` days are kept but never revised, so a correction to work
+  older than that never reaches the hosted ledger. The published windows are all
+  inside coverage, so they always agree with the local report.
+- **A checkout with no GitHub remote is published under its position in the config.**
+  It appears as `local-repository-2` for the second entry. Reordering or removing an
+  earlier entry renumbers it; the records under the old alias are deleted rather than
+  double-counted, but facts older than coverage are not carried across. Setting
+  `githubRepo` avoids this.
+- **Two collectors publishing at the same instant race.** Each publication is one
+  transaction, so the ledger stays consistent, but the read-then-write that decides
+  `alreadyCurrent` is not atomic; simultaneous publications from the same machine can
+  both do the work. Staggered timers avoid it.
+- **The snapshot fallback holds one publication per account, not one per collector.**
+  With several collectors, `?source=snapshot` shows whichever published last. The
+  ledger is the correct view; the snapshot is there for comparison during validation.
+- **The hosted SQL itself is not exercised in CI.** There is no Postgres in the test
+  environment, so the ledger tests run against an in-memory store that mirrors the
+  same keys and lifetime rules. Reads, writes, and metrics are covered; the SQL text
+  is not.
 - **Accounts cannot be deleted from the UI.** Removing one means deleting its
   `overview_user` row, which cascades to its tokens and snapshot.
 

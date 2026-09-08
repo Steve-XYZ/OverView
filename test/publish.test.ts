@@ -4,7 +4,7 @@ import { defaultConfig } from "../src/config/config.ts";
 import {
   buildPublication,
   isPublicationEnvelope,
-  publishSnapshots,
+  publishToHost,
   redactForPublishing,
 } from "../src/publish/publish.ts";
 import { buildSummary } from "../src/metrics/summary.ts";
@@ -114,7 +114,7 @@ describe("the publish boundary", () => {
       return Response.json({ publishedAt: "2026-09-03T18:01:00.000Z", alreadyCurrent: false });
     };
     const token = "a".repeat(48);
-    const result = await publishSnapshots(
+    const result = await publishToHost(
       "https://overview.example/api/publish",
       token,
       publication,
@@ -129,7 +129,7 @@ describe("the publish boundary", () => {
     assert.equal(receivedInit?.redirect, "error");
     assert.equal(result.publishedAt, "2026-09-03T18:01:00.000Z");
     await assert.rejects(
-      () => publishSnapshots("http://overview.example/api/publish", token, publication, fetchImpl),
+      () => publishToHost("http://overview.example/api/publish", token, publication, fetchImpl),
       /HTTPS/,
     );
     seeded.db.close();
