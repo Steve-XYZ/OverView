@@ -11,6 +11,8 @@ import type {
 } from "../../src/domain/types.ts";
 import { openDatabase, type Db } from "../../src/store/db.ts";
 import {
+  finishSyncRun,
+  repositoryId,
   startSyncRun,
   upsertCommits,
   upsertLinearIssues,
@@ -56,10 +58,12 @@ export function commit(options: {
   deletions?: number;
   files?: number;
   parents?: number;
+  subject?: string;
+  repo?: string;
   syncRunId: number;
 }): CommitRecord {
   return {
-    repositoryKey: REPO_KEY,
+    repositoryKey: options.repo ?? REPO_KEY,
     sha: options.sha,
     authorName: "Ada",
     authorEmail: options.email ?? "ada@example.com",
@@ -67,7 +71,7 @@ export function commit(options: {
     committerName: "Ada",
     committerEmail: options.email ?? "ada@example.com",
     committedAt: options.committedAt ?? options.authoredAt,
-    subject: `Commit ${options.sha}`,
+    subject: options.subject ?? `Commit ${options.sha}`,
     parentCount: options.parents ?? 1,
     diff: {
       additions: options.additions ?? 10,
@@ -98,14 +102,16 @@ export function pullRequest(options: {
   mergedAt?: string;
   headRef?: string | null;
   mergeCommitSha?: string | null;
+  state?: PullRequestRecord["state"];
+  repo?: string;
   syncRunId: number;
 }): PullRequestRecord {
   const merged = options.mergedAt !== undefined;
   return {
-    repositoryKey: REPO_KEY,
+    repositoryKey: options.repo ?? REPO_KEY,
     number: options.number,
     title: options.title ?? `Pull request ${options.number}`,
-    state: merged ? "MERGED" : "OPEN",
+    state: options.state ?? (merged ? "MERGED" : "OPEN"),
     isDraft: false,
     authorLogin: options.login ?? "ada",
     createdAt: options.createdAt,
@@ -133,10 +139,11 @@ export function review(options: {
   number: number;
   login?: string;
   submittedAt: string;
+  repo?: string;
   syncRunId: number;
 }): ReviewRecord {
   return {
-    repositoryKey: REPO_KEY,
+    repositoryKey: options.repo ?? REPO_KEY,
     pullRequestSourceId: options.prId,
     pullRequestNumber: options.number,
     reviewerLogin: options.login ?? "ada",
@@ -184,13 +191,31 @@ export interface SeededDb {
   readonly repositoryId: number;
 }
 
-export function seedDatabase(): SeededDb {
+/** A database holding one repository. Pass `repository` for a different machine. */
+export function seedDatabase(repository: RepositoryRecord = REPOSITORY): SeededDb {
   const db = openDatabase(":memory:");
   const syncRunId = startSyncRun(db, "2026-06-01T00:00:00.000Z", "ada");
-  const repositoryId = upsertRepository(db, REPOSITORY);
+  const repositoryId = upsertRepository(db, repository);
   return { db, syncRunId, repositoryId };
 }
 
+/** Records the diagnostics a finished sync would have left, including Linear's. */
+export function finishSeededSync(
+  seeded: SeededDb,
+  notes: { linear?: { status: string }; warnings?: string[] },
+): void {
+  finishSyncRun(seeded.db, seeded.syncRunId, "ok", JSON.stringify(notes));
+}
+
+/** Adds a second repository, so multi-repository behaviour can be seeded. */
+export function addRepository(seeded: SeededDb, repository: RepositoryRecord): number {
+  return upsertRepository(seeded.db, repository);
+}
+
+/**
+ * Writes each record against the repository its own `repositoryKey` names, so a
+ * fixture can span repositories without the caller tracking numeric ids.
+ */
 export function writeAll(
   seeded: SeededDb,
   data: {
@@ -200,8 +225,21 @@ export function writeAll(
     linearIssues?: LinearIssueRecord[];
   },
 ): void {
-  upsertCommits(seeded.db, seeded.repositoryId, data.commits ?? []);
-  upsertPullRequests(seeded.db, seeded.repositoryId, data.pullRequests ?? []);
-  upsertReviews(seeded.db, seeded.repositoryId, data.reviews ?? []);
+  const byRepository = <T extends { readonly repositoryKey: string }>(
+    records: readonly T[],
+    write: (repositoryId: number, group: T[]) => void,
+  ): void => {
+    const groups = new Map<string, T[]>();
+    for (const record of records) {
+      const group = groups.get(record.repositoryKey) ?? [];
+      group.push(record);
+      groups.set(record.repositoryKey, group);
+    }
+    for (const [key, group] of groups) write(repositoryId(seeded.db, key), group);
+  };
+
+  byRepository(data.commits ?? [], (id, group) => upsertCommits(seeded.db, id, group));
+  byRepository(data.pullRequests ?? [], (id, group) => upsertPullRequests(seeded.db, id, group));
+  byRepository(data.reviews ?? [], (id, group) => upsertReviews(seeded.db, id, group));
   upsertLinearIssues(seeded.db, data.linearIssues ?? []);
 }

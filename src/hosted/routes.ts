@@ -23,9 +23,15 @@ import {
 } from "./auth.ts";
 import { authorizeUrl, exchangeCodeForIdentity, type FetchLike } from "./github.ts";
 import type { HostedStore, HostedUser } from "./store.ts";
-import { isPublicationEnvelope } from "../publish/publish.ts";
+import {
+  isLedgerPublication,
+  isPublicationEnvelope,
+  MAX_PUBLICATION_BYTES,
+  type WindowKey,
+} from "../publish/publish.ts";
+import { summarize } from "../metrics/summary.ts";
+import { createWindow } from "../metrics/window.ts";
 
-const MAX_PUBLICATION_BYTES = 1_500_000;
 const MAX_TOKEN_NAME = 60;
 const HOSTED_WINDOWS = new Set([7, 30, 90]);
 const DEFAULT_TOKEN_NAME = "collector";
@@ -105,20 +111,57 @@ export function handleLogout(request: Request): Response {
   });
 }
 
+/**
+ * The dashboard read.
+ *
+ * The ledger answers when the account has published one: the window is built in the
+ * collector's zone, the facts for that range are read, and the same `summarize` the
+ * local report uses derives the numbers. An account that has only ever published
+ * snapshots — or a request that explicitly asks for `source=snapshot`, which is how
+ * the two paths get compared — reads the stored summary instead.
+ */
 export async function handleSummary(request: Request, deps: SessionDeps): Promise<Response> {
   const user = await currentUser(request, deps);
   if (user === null) return json(401, { error: "Authentication required." });
 
-  const requested = Number(new URL(request.url).searchParams.get("days") ?? 30);
+  const url = new URL(request.url);
+  const requested = Number(url.searchParams.get("days") ?? 30);
   const days = HOSTED_WINDOWS.has(requested) ? requested : 30;
+  const requestedSource = url.searchParams.get("source");
+  if (requestedSource !== null && requestedSource !== "ledger" && requestedSource !== "snapshot") {
+    return json(400, { error: "source must be ledger or snapshot." });
+  }
+  const account = { githubLogin: user.githubLogin };
+
+  if (requestedSource !== "snapshot") {
+    const ledger = await deps.store.getLedgerHead(user.id);
+    if (ledger !== null) {
+      const window = createWindow(days, deps.now ?? Date.now(), ledger.collector.timeZone);
+      const records = await deps.store.readLedgerRecords(user.id, {
+        fromMs: window.fromMs,
+        toMs: window.toMs,
+        fromDay: window.startDayKey,
+        toDay: window.endDayKey,
+      });
+      return json(200, {
+        ...summarize({ collector: ledger.collector, ...records }, window),
+        publishedAt: ledger.publishedAt,
+        account,
+        source: "ledger",
+      });
+    }
+    if (requestedSource === "ledger") {
+      return json(404, { error: "No normalized facts have been published yet." });
+    }
+  }
+
   const current = await deps.store.getSnapshot(user.id);
   if (current === null) return json(404, { error: "Nothing has been published yet." });
-
-  const summary = current.publication.snapshots[String(days) as "7" | "30" | "90"];
   return json(200, {
-    ...summary,
+    ...current.snapshots[String(days) as WindowKey],
     publishedAt: current.publishedAt,
-    account: { githubLogin: user.githubLogin },
+    account,
+    source: "snapshot",
   });
 }
 
@@ -152,8 +195,11 @@ export async function handleTokens(request: Request, deps: SessionDeps): Promise
 export async function handlePublish(request: Request, deps: PublishDeps): Promise<Response> {
   const presented = bearerToken(request);
   if (presented === null) return json(401, { error: "Unauthorized." });
-  const user = await deps.store.findUserByTokenHash(await hashCollectorToken(presented));
-  if (user === null) return json(401, { error: "Unauthorized." });
+  // The credential identifies both the account and which collector is publishing;
+  // authority to remove a stored fact is scoped to the latter.
+  const collector = await deps.store.findCollectorByTokenHash(await hashCollectorToken(presented));
+  if (collector === null) return json(401, { error: "Unauthorized." });
+  const user = collector.user;
 
   const declaredLength = Number(request.headers.get("content-length") ?? 0);
   if (declaredLength > MAX_PUBLICATION_BYTES) return json(413, { error: "Publication is too large." });
@@ -167,10 +213,13 @@ export async function handlePublish(request: Request, deps: PublishDeps): Promis
   } catch {
     return json(400, { error: "Publication must be valid JSON." });
   }
-  if (!isPublicationEnvelope(body)) {
-    return json(400, { error: "Publication does not match schema version 1." });
+  // Version 2 carries normalized facts and the snapshots derived from them; version 1
+  // is snapshots alone, and is still accepted so an older collector keeps working.
+  if (isLedgerPublication(body)) {
+    return json(200, await deps.store.putLedger(user.id, collector.collectorId, body));
   }
-  return json(200, await deps.store.putSnapshot(user.id, body));
+  if (isPublicationEnvelope(body)) return json(200, await deps.store.putSnapshot(user.id, body));
+  return json(400, { error: "Publication does not match schema version 1 or 2." });
 }
 
 /**
