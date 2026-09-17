@@ -303,6 +303,33 @@ export function readLinearIssuesCompleted(db: Db, range: TimeRange): LinearIssue
   }
 }
 
+export interface AuthorEmailCount {
+  readonly email: string;
+  readonly commits: number;
+}
+
+/**
+ * Non-merge commit authorship in range, by email, most frequent first.
+ *
+ * Powers the `doctor` identity-coverage check: an address here that is not in
+ * `identity.gitEmails` is work the dashboard silently drops.
+ */
+export function readAuthorEmailCounts(db: Db, sinceMs: number): AuthorEmailCount[] {
+  try {
+    return db
+      .prepare(
+        `SELECT author_email AS email, COUNT(*) AS commits
+         FROM commit_event
+         WHERE is_merge = 0 AND authored_at_ms >= ?
+         GROUP BY author_email
+         ORDER BY commits DESC`,
+      )
+      .all(sinceMs) as unknown as AuthorEmailCount[];
+  } catch {
+    return [];
+  }
+}
+
 function placeholders(count: number): string {
   return Array.from({ length: count }, () => "?").join(", ");
 }
