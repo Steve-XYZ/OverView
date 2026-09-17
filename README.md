@@ -359,12 +359,18 @@ anyone else's machine, and no administrator hands out a credential.
    *Create token*. The token is shown once and stored only as a SHA-256 digest; it is
    scoped to that one account and cannot open a dashboard. Create one per machine and
    revoke it if the machine is lost.
-3. **Configure the CLI**, using the two exported lines the page shows:
+3. **Configure the CLI.** Store the two lines the page shows in
+   `~/.config/overview/env` (mode `0600`), not just in the shell — the
+   scheduled collector never sees interactive exports:
 
 ```bash
 node dist/cli.js init --repo ~/src/one-repo --repo ~/src/another
-export OVERVIEW_PUBLISH_TOKEN='ovp_...'
-export OVERVIEW_PUBLISH_URL='https://your-overview.vercel.app/api/publish'
+mkdir -p ~/.config/overview && chmod 700 ~/.config/overview
+cat >> ~/.config/overview/env <<'EOF'
+OVERVIEW_PUBLISH_TOKEN='ovp_...'
+OVERVIEW_PUBLISH_URL='https://your-overview.vercel.app/api/publish'
+EOF
+chmod 600 ~/.config/overview/env
 ```
 
 4. **Check `identity.gitEmails`** in `overview.config.json`, and mark work

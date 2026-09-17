@@ -138,10 +138,20 @@ export async function readPlistConfig(
   const interval = /<key>StartInterval<\/key>\s*<integer>(?<seconds>\d+)<\/integer>/.exec(contents);
   const args = contents.split("<string>").slice(1).map((part) => part.split("</string>")[0] as string);
   const flag = args.indexOf("--config");
+  const recorded = flag === -1 ? null : (args[flag + 1] ?? null);
   return {
     intervalSeconds: interval?.groups === undefined ? null : Number(interval.groups["seconds"]),
-    configPath: flag === -1 ? null : (args[flag + 1] ?? null),
+    // buildPlist escapes these values; decode them back to filesystem paths.
+    configPath: recorded === null ? null : unescapeXml(recorded),
   };
+}
+
+function unescapeXml(value: string): string {
+  return value
+    .replaceAll("&quot;", '"')
+    .replaceAll("&gt;", ">")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&amp;", "&");
 }
 
 export async function installPlist(
@@ -168,11 +178,13 @@ export async function installPlist(
 }
 
 export async function uninstallPlist(paths: CollectorPaths = collectorPaths()): Promise<boolean> {
-  if (!existsSync(paths.plistPath)) return false;
+  const existed = existsSync(paths.plistPath);
+  // A loaded job survives a manually deleted plist, so always attempt bootout:
+  // without it, hourly collection would keep firing after "uninstall".
   const uid = currentUid();
   await run("launchctl", ["bootout", `gui/${uid}/${COLLECTOR_LABEL}`], { timeoutMs: 15_000 });
-  await rm(paths.plistPath, { force: true });
-  return true;
+  if (existed) await rm(paths.plistPath, { force: true });
+  return existed;
 }
 
 /** Fire the installed job immediately, without waiting for its interval. */

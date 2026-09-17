@@ -56,6 +56,7 @@ export function collectorEnvPath(homeDir: string = homedir()): string {
 
 export interface CollectorEnvFile {
   readonly path: string;
+  /** False only when the file is definitively absent (ENOENT). */
   readonly exists: boolean;
   /** False when group/other permission bits are set; nothing may be loaded then. */
   readonly permissionsOk: boolean;
@@ -74,8 +75,20 @@ export async function inspectCollectorEnvFile(
   let mode: number;
   try {
     mode = (await stat(path)).mode;
-  } catch {
-    return { path, exists: false, permissionsOk: false, mode: null, keysPresent: [], error: null };
+  } catch (error) {
+    // Only a missing file means "no credentials". Anything else (EACCES, ELOOP,
+    // I/O) is a real filesystem problem that must surface, not read as absent.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { path, exists: false, permissionsOk: false, mode: null, keysPresent: [], error: null };
+    }
+    return {
+      path,
+      exists: true,
+      permissionsOk: false,
+      mode: null,
+      keysPresent: [],
+      error: `Cannot inspect credentials at ${path}: ${message(error)}`,
+    };
   }
   if ((mode & 0o077) !== 0) {
     return {
@@ -165,4 +178,8 @@ function unquote(value: string): string {
   }
   const comment = value.search(/(^|\s)#/);
   return (comment === -1 ? value : value.slice(0, comment)).trim();
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

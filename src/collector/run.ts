@@ -77,11 +77,6 @@ export async function collectorRun(options: CollectorRunOptions = {}): Promise<C
   const paths = options.paths ?? collectorPaths();
   let configPath = options.configPath;
 
-  const env = options.envPath === null
-    ? { path: "(skipped)", loaded: false, keysPresent: [], keysApplied: [], error: null }
-    : await loadCollectorEnv(process.env, options.envPath ?? collectorEnvPath());
-  if (env.error !== null) log(`  ⚠ ${env.error}`);
-
   let syncPart: CollectorState["sync"] = null;
   let publishPart: CollectorState["publish"] = {
     status: "skipped",
@@ -92,6 +87,12 @@ export async function collectorRun(options: CollectorRunOptions = {}): Promise<C
   let syncOk = false;
 
   try {
+    // Inside the guarded path: if the env file vanishes or becomes unreadable
+    // mid-flight, this records a failed run instead of rejecting without state.
+    if (options.envPath !== null) {
+      const env = await loadCollectorEnv(process.env, options.envPath ?? collectorEnvPath());
+      if (env.error !== null) log(`  ⚠ ${env.error}`);
+    }
     const loaded = await loadConfig(configPath);
     configPath = loaded.configPath;
     const { config, databasePath } = loaded;

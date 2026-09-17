@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
-import { chmod, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -14,6 +14,8 @@ async function writeEnv(contents: string, mode = 0o600): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "overview-env-"));
   const path = join(dir, "env");
   await writeFile(path, contents, { mode });
+  // writeFile applies the process umask, so set the exact mode explicitly.
+  await chmod(path, mode);
   return path;
 }
 
@@ -94,5 +96,20 @@ describe("inspectCollectorEnvFile", () => {
     assert.equal(inspected.permissionsOk, false);
     assert.match(inspected.error ?? "", /chmod 600/);
     assert.deepEqual(inspected.keysPresent, []);
+  });
+
+  it("reports filesystem errors other than ENOENT instead of reading them as missing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "overview-env-"));
+    const blocked = join(dir, "noaccess");
+    await mkdir(blocked);
+    await chmod(blocked, 0o600);
+    try {
+      const inspected = await inspectCollectorEnvFile(join(blocked, "env"));
+      assert.equal(inspected.exists, true);
+      assert.equal(inspected.permissionsOk, false);
+      assert.notEqual(inspected.error, null);
+    } finally {
+      await chmod(blocked, 0o700);
+    }
   });
 });

@@ -1,10 +1,14 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildPlist,
   COLLECTOR_INTERVAL_SECONDS,
   COLLECTOR_LABEL,
   collectorPaths,
+  readPlistConfig,
 } from "../src/collector/launchd.ts";
 
 describe("buildPlist", () => {
@@ -51,6 +55,25 @@ describe("buildPlist", () => {
       intervalSeconds: 1800,
     });
     assert.match(custom, /<integer>1800<\/integer>/);
+  });
+
+  it("round-trips a config path containing XML-escaped characters", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "overview-plist-"));
+    const plistPath = join(dir, "com.overview.collector.plist");
+    await writeFile(
+      plistPath,
+      buildPlist({
+        nodePath: "/n",
+        cliPath: "/c",
+        configPath: "/Users/test/Code & Stuff/overview.config.json",
+        logPath: "/l",
+        intervalSeconds: 1800,
+      }),
+      "utf8",
+    );
+    const recorded = await readPlistConfig(plistPath);
+    assert.equal(recorded.configPath, "/Users/test/Code & Stuff/overview.config.json");
+    assert.equal(recorded.intervalSeconds, 1800);
   });
 });
 

@@ -18,7 +18,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { MS_PER_DAY } from "../domain/time.ts";
 import { loadConfig, type OverviewConfig, type RepoConfig } from "../config/config.ts";
-import { openDatabase } from "../store/db.ts";
+import { openDatabase, type Db } from "../store/db.ts";
 import { readAuthorEmailCounts, readLastSyncRun, type SyncRunRow } from "../store/reads.ts";
 import { ghAuthenticated, ghAvailable, viewerLogin } from "../ingest/github/ghCli.ts";
 import { run } from "../ingest/exec.ts";
@@ -108,7 +108,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorChec
     }
   }
 
-  checks.push(await checkLastPublication(paths));
+  checks.push(await checkLastPublication(paths, configPath));
   checks.push(await checkCollector(paths, configPath));
   return checks;
 }
@@ -151,14 +151,29 @@ async function checkGit(): Promise<DoctorCheck> {
 }
 
 async function checkGh(): Promise<DoctorCheck> {
-  if (!(await ghAvailable())) {
+  // ghAvailable/ghAuthenticated spawn `gh`, which rejects when the binary
+  // cannot be executed. That is the very case this check must report, so the
+  // spawn itself stays inside the boundary.
+  let available = false;
+  let authenticated = false;
+  try {
+    available = await ghAvailable();
+    authenticated = available && (await ghAuthenticated());
+  } catch (error) {
+    return {
+      name: "github cli",
+      status: "warn",
+      detail: `\`gh\` could not be run (${message(error)}), so pull requests and reviews are skipped.`,
+    };
+  }
+  if (!available) {
     return {
       name: "github cli",
       status: "warn",
       detail: "`gh` is not on PATH, so pull requests and reviews are skipped.",
     };
   }
-  if (!(await ghAuthenticated())) {
+  if (!authenticated) {
     return {
       name: "github cli",
       status: "warn",
@@ -276,7 +291,16 @@ async function checkRepository(repo: RepoConfig): Promise<DoctorCheck> {
 }
 
 function checkIdentityCoverage(config: OverviewConfig, databasePath: string): DoctorCheck {
-  const db = openDatabase(databasePath);
+  let db: Db;
+  try {
+    db = openDatabase(databasePath);
+  } catch (error) {
+    return {
+      name: "identity coverage",
+      status: "warn",
+      detail: `Database at ${databasePath} could not be opened: ${message(error)}`,
+    };
+  }
   try {
     const sinceMs = Date.now() - config.sync.sinceDays * MS_PER_DAY;
     const counts = readAuthorEmailCounts(db, sinceMs);
@@ -318,7 +342,16 @@ function checkIdentityCoverage(config: OverviewConfig, databasePath: string): Do
 }
 
 function checkLastSync(databasePath: string): DoctorCheck {
-  const db = openDatabase(databasePath);
+  let db: Db;
+  try {
+    db = openDatabase(databasePath);
+  } catch (error) {
+    return {
+      name: "last sync",
+      status: "warn",
+      detail: `Database at ${databasePath} could not be opened: ${message(error)}`,
+    };
+  }
   try {
     const runRow: SyncRunRow | null = readLastSyncRun(db);
     if (runRow === null) {
@@ -363,13 +396,23 @@ function linearStatusNote(notes: string | null): string {
   }
 }
 
-async function checkLastPublication(paths: CollectorPaths): Promise<DoctorCheck> {
+async function checkLastPublication(paths: CollectorPaths, configPath: string): Promise<DoctorCheck> {
   const state = await readCollectorState(paths.statePath);
   if (state === null) {
     return {
       name: "last publication",
       status: "warn",
       detail: "No collector run recorded yet. Run `overview collector run`.",
+    };
+  }
+  // A healthy run for another config says nothing about this one.
+  if (state.configPath !== "(unresolved)" && state.configPath !== configPath) {
+    return {
+      name: "last publication",
+      status: "warn",
+      detail:
+        `The last recorded run watched ${state.configPath}, not ${configPath}. ` +
+        `Its publication status does not apply here.`,
     };
   }
   const at = state.lastRunAt.slice(0, 16).replace("T", " ");
@@ -412,8 +455,9 @@ async function checkCollector(paths: CollectorPaths, configPath: string): Promis
   const parts: string[] = [];
   parts.push(loaded ? "loaded" : "installed but NOT loaded — runs will not fire until it is bootstrapped");
   if (recorded.intervalSeconds !== null) parts.push(`every ${recorded.intervalSeconds}s`);
-  if (recorded.configPath !== null && recorded.configPath !== configPath) {
-    parts.push(`watches ${recorded.configPath}`);
+  const watchesElsewhere = recorded.configPath !== null && recorded.configPath !== configPath;
+  if (watchesElsewhere) {
+    parts.push(`watches ${recorded.configPath} — not the config being diagnosed (${configPath})`);
   }
   if (state !== null) {
     parts.push(
@@ -424,7 +468,8 @@ async function checkCollector(paths: CollectorPaths, configPath: string): Promis
   } else {
     parts.push("never run");
   }
-  const status: DoctorStatus = !loaded ? "warn" : state?.exitCode !== 0 ? "warn" : "ok";
+  const status: DoctorStatus =
+    !loaded || watchesElsewhere || state?.exitCode !== 0 ? "warn" : "ok";
   return { name: "collector", status, detail: `${paths.plistPath}: ${parts.join("; ")}.` };
 }
 

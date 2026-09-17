@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { doctorOk, renderDoctor, runDoctor } from "../src/collector/doctor.ts";
@@ -54,6 +54,39 @@ describe("runDoctor", () => {
       const rendered = renderDoctor(checks);
       assert.match(rendered, /✗ repo .* does not exist/);
       assert.match(rendered, /will stay incomplete/);
+    });
+  });
+
+  it("warns when the recorded run watched a different config", async () => {
+    await withoutCredentials(async () => {
+      const home = await mkdtemp(join(tmpdir(), "overview-doctor-"));
+      const configPath = join(home, "overview.config.json");
+      await writeFile(
+        configPath,
+        JSON.stringify({
+          identity: { githubLogin: "tester", gitEmails: ["tester@example.com"] },
+          repositories: [],
+        }),
+        "utf8",
+      );
+      await mkdir(join(home, ".config", "overview"), { recursive: true });
+      await writeFile(
+        join(home, ".config", "overview", "collector-state.json"),
+        JSON.stringify({
+          version: 1,
+          lastRunAt: new Date().toISOString(),
+          exitCode: 0,
+          configPath: join(home, "other.config.json"),
+          sync: { runId: 1, ok: true, linearStatus: "synced" },
+          publish: { status: "published", publishedAt: new Date().toISOString(), detail: null },
+          error: null,
+        }),
+        "utf8",
+      );
+      const checks = await runDoctor({ configPath, homeDir: home });
+      const publication = checks.find((check) => check.name === "last publication");
+      assert.equal(publication?.status, "warn");
+      assert.match(publication?.detail ?? "", /not .*overview\.config\.json/);
     });
   });
 

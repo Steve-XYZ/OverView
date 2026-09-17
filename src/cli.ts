@@ -456,15 +456,10 @@ async function collectorInstall(argv: string[]): Promise<void> {
   }
 
   const paths = collectorPaths();
-  const plist = buildPlist({
-    nodePath: process.execPath,
-    cliPath,
-    configPath,
-    logPath: paths.logPath,
-    intervalSeconds: interval,
-  });
-  await installPlist(plist, paths);
 
+  // The scaffold must exist before the job is bootstrapped: with RunAtLoad
+  // the first run fires immediately, and it should see the file (even empty)
+  // rather than a missing path.
   const envPath = collectorEnvPath();
   if (!existsSync(envPath)) {
     await mkdir(dirname(envPath), { recursive: true });
@@ -480,6 +475,15 @@ async function collectorInstall(argv: string[]): Promise<void> {
       { mode: 0o600 },
     );
   }
+
+  const plist = buildPlist({
+    nodePath: process.execPath,
+    cliPath,
+    configPath,
+    logPath: paths.logPath,
+    intervalSeconds: interval,
+  });
+  await installPlist(plist, paths);
 
   process.stdout.write(`Installed ${COLLECTOR_LABEL} (every ${interval}s, run at login).\n`);
   process.stdout.write(`  watches ${configPath}\n`);
