@@ -9,11 +9,16 @@
  *   overview report [--days N]         print the metrics
  *   overview publish                   upload redacted facts and 7/30/90-day summaries
  *   overview serve [--port N]          serve the dashboard on the loopback interface
+ *   overview collector install|run|status|logs|uninstall
+ *                                      automate sync -> publish with launchd
+ *   overview doctor                    diagnose what would make collection incomplete
  */
 
 import { parseArgs } from "node:util";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import {
   CONFIG_FILENAME,
   ConfigError,
@@ -40,6 +45,23 @@ import {
   PUBLISH_ENDPOINT_ENV,
   PUBLISH_TOKEN_ENV,
 } from "./publish/publish.ts";
+import { collectorEnvPath, loadCollectorEnv } from "./collector/env.ts";
+import {
+  COLLECTOR_INTERVAL_SECONDS,
+  COLLECTOR_LABEL,
+  buildPlist,
+  collectorPaths,
+  installPlist,
+  kickstartPlist,
+  logInfo,
+  plistInstalled,
+  plistLoaded,
+  readPlistConfig,
+  resolveCliPath,
+  uninstallPlist,
+} from "./collector/launchd.ts";
+import { collectorRun, readCollectorState } from "./collector/run.ts";
+import { doctorOk, renderDoctor, runDoctor } from "./collector/doctor.ts";
 
 const USAGE = `overview — what did I ship?
 
@@ -50,6 +72,12 @@ const USAGE = `overview — what did I ship?
   overview report [--days N]
   overview publish [--endpoint <https-url>] [--snapshot-only]
   overview serve [--port N] [--host H]
+  overview collector install [--interval <seconds>] [--now]
+  overview collector run
+  overview collector status
+  overview collector logs [--lines N]
+  overview collector uninstall
+  overview doctor
 
 Options
   --config <path>   Use a specific config file
@@ -82,6 +110,12 @@ async function run(argv: string[]): Promise<void> {
       case "serve":
         await commandServe(rest);
         break;
+      case "collector":
+        await commandCollector(rest);
+        break;
+      case "doctor":
+        await commandDoctor(rest);
+        break;
       case "":
       case "help":
       case "--help":
@@ -113,6 +147,7 @@ async function commandPublish(argv: string[]): Promise<void> {
 
   const { config, databasePath } = await loadConfig(values.config);
   requireDatabase(databasePath);
+  await applyCollectorEnv();
   const endpoint = values.endpoint ?? process.env[PUBLISH_ENDPOINT_ENV] ?? config.publish.endpoint;
   if (endpoint === null || endpoint === undefined || endpoint.length === 0) {
     throw new ConfigError(
@@ -268,6 +303,7 @@ async function commandSync(argv: string[]): Promise<void> {
   });
 
   const { config, configPath, databasePath } = await loadConfig(values.config);
+  await applyCollectorEnv();
   const db = openDatabase(databasePath);
   try {
     const result = await sync(db, config, {
@@ -367,7 +403,210 @@ async function commandServe(argv: string[]): Promise<void> {
   process.on("SIGTERM", shutdown);
 }
 
+/* -------------------------------------------------------------- collector */
+
+async function commandCollector(argv: string[]): Promise<void> {
+  const [subcommand = "", ...rest] = argv;
+  switch (subcommand) {
+    case "install":
+      await collectorInstall(rest);
+      break;
+    case "run":
+      await collectorRunCommand(rest);
+      break;
+    case "status":
+      await collectorStatus(rest);
+      break;
+    case "logs":
+      await collectorLogs(rest);
+      break;
+    case "uninstall":
+      await collectorUninstall();
+      break;
+    default:
+      throw new ConfigError(
+        "Usage: overview collector install|run|status|logs|uninstall",
+      );
+  }
+}
+
+async function collectorInstall(argv: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      config: { type: "string" },
+      interval: { type: "string" },
+      now: { type: "boolean" },
+    },
+    allowPositionals: false,
+  });
+
+  const interval = values.interval === undefined
+    ? COLLECTOR_INTERVAL_SECONDS
+    : Number.parseInt(values.interval, 10);
+  if (!Number.isInteger(interval) || interval < 300) {
+    throw new ConfigError("--interval must be at least 300 seconds.");
+  }
+
+  const { configPath } = await loadConfig(values.config);
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const cliPath = resolveCliPath(repoRoot);
+  if (!existsSync(cliPath)) {
+    throw new ConfigError(`No CLI entry point at ${cliPath}. Run \`pnpm build\` first.`);
+  }
+
+  const paths = collectorPaths();
+  const plist = buildPlist({
+    nodePath: process.execPath,
+    cliPath,
+    configPath,
+    logPath: paths.logPath,
+    intervalSeconds: interval,
+  });
+  await installPlist(plist, paths);
+
+  const envPath = collectorEnvPath();
+  if (!existsSync(envPath)) {
+    await mkdir(dirname(envPath), { recursive: true });
+    await writeFile(
+      envPath,
+      `# OverView collector credentials. Mode 0600: readable only by you.\n` +
+        `# The scheduled job reads this file because launchd never sees your shell.\n` +
+        `# Values here never override variables already in the environment.\n` +
+        `#\n` +
+        `# LINEAR_API_KEY=lin_api_...\n` +
+        `# OVERVIEW_PUBLISH_TOKEN=ovp_...\n` +
+        `# OVERVIEW_PUBLISH_URL=https://your-overview.vercel.app/api/publish\n`,
+      { mode: 0o600 },
+    );
+  }
+
+  process.stdout.write(`Installed ${COLLECTOR_LABEL} (every ${interval}s, run at login).\n`);
+  process.stdout.write(`  watches ${configPath}\n`);
+  process.stdout.write(`  invokes ${cliPath}\n`);
+  process.stdout.write(`  logs to ${paths.logPath}\n`);
+  process.stdout.write(`  credentials in ${envPath}\n`);
+  process.stdout.write(`Run \`overview doctor\` to confirm the next scheduled run will be complete.\n`);
+
+  if (values.now === true) {
+    await kickstartPlist(COLLECTOR_LABEL);
+    process.stdout.write("Started the job now; follow it with `overview collector logs`.\n");
+  }
+}
+
+async function collectorRunCommand(argv: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args: argv,
+    options: { config: { type: "string" } },
+    allowPositionals: false,
+  });
+  const { exitCode } = await collectorRun({
+    ...(values.config === undefined ? {} : { configPath: values.config }),
+    log: (line) => process.stdout.write(`${line}\n`),
+  });
+  process.exitCode = exitCode;
+}
+
+async function collectorStatus(argv: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args: argv,
+    options: { config: { type: "string" } },
+    allowPositionals: false,
+  });
+  const paths = collectorPaths();
+  const installed = plistInstalled(paths);
+  process.stdout.write(`${COLLECTOR_LABEL}: ${installed ? "installed" : "not installed"}\n`);
+  if (!installed) {
+    process.stdout.write("Run `overview collector install` to automate sync -> publish.\n");
+    return;
+  }
+  const [loaded, recorded, info, state] = await Promise.all([
+    plistLoaded(COLLECTOR_LABEL),
+    readPlistConfig(paths.plistPath),
+    logInfo(paths.logPath),
+    readCollectorState(paths.statePath),
+  ]);
+  process.stdout.write(`  job: ${loaded ? "loaded (armed)" : "NOT loaded — runs will not fire"}\n`);
+  if (recorded.intervalSeconds !== null) {
+    process.stdout.write(`  interval: every ${recorded.intervalSeconds}s\n`);
+  }
+  process.stdout.write(`  watches: ${recorded.configPath ?? "(unknown)"}\n`);
+  if (values.config !== undefined) process.stdout.write(`  (ignoring --config for status)\n`);
+  if (state === null) {
+    process.stdout.write("  last run: never\n");
+  } else {
+    process.stdout.write(
+      `  last run: ${state.lastRunAt} exit ${state.exitCode}\n` +
+        `  sync: ${state.sync === null ? "did not complete" : `#${state.sync.runId} ${state.sync.ok ? "ok" : "partial"} (Linear ${state.sync.linearStatus})`}\n` +
+        `  publish: ${state.publish.status}${state.publish.publishedAt === null ? "" : ` at ${state.publish.publishedAt}`}\n`,
+    );
+    if (state.publish.detail !== null) process.stdout.write(`    ${state.publish.detail}\n`);
+    if (state.error !== null) process.stdout.write(`    error: ${state.error}\n`);
+  }
+  process.stdout.write(
+    info.exists
+      ? `  log: ${paths.logPath} (${info.bytes} bytes, updated ${info.mtime})\n`
+      : `  log: ${paths.logPath} (no output yet)\n`,
+  );
+}
+
+async function collectorLogs(argv: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args: argv,
+    options: { lines: { type: "string" } },
+    allowPositionals: false,
+  });
+  const count = values.lines === undefined ? 50 : Number.parseInt(values.lines, 10);
+  if (!Number.isInteger(count) || count <= 0) {
+    throw new ConfigError("--lines must be a positive integer.");
+  }
+  const { logPath } = collectorPaths();
+  if (!existsSync(logPath)) {
+    process.stdout.write(`No log at ${logPath} yet. No scheduled run has produced output.\n`);
+    return;
+  }
+  const lines = (await readFile(logPath, "utf8")).split("\n");
+  const tail = lines.slice(-count - 1).join("\n");
+  process.stdout.write(`${logPath} (last ${count} lines)\n${tail}${tail.endsWith("\n") ? "" : "\n"}`);
+}
+
+async function collectorUninstall(): Promise<void> {
+  const removed = await uninstallPlist(collectorPaths());
+  process.stdout.write(
+    removed
+      ? `Removed ${COLLECTOR_LABEL}. Local data and logs are untouched.\n`
+      : `${COLLECTOR_LABEL} is not installed.\n`,
+  );
+}
+
+/* ----------------------------------------------------------------- doctor */
+
+async function commandDoctor(argv: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args: argv,
+    options: { config: { type: "string" } },
+    allowPositionals: false,
+  });
+  await applyCollectorEnv();
+  const checks = await runDoctor({
+    ...(values.config === undefined ? {} : { configPath: values.config }),
+  });
+  process.stdout.write(renderDoctor(checks));
+  if (!doctorOk(checks)) process.exitCode = 1;
+}
+
 /* ------------------------------------------------------------------ helpers */
+
+/**
+ * Import scheduled-run credentials before any command that reads them.
+ *
+ * Prints the refusal warning when the env file exists but is insecure;
+ * commands that do not need credentials never call this.
+ */
+async function applyCollectorEnv(): Promise<void> {
+  const result = await loadCollectorEnv();
+  if (result.error !== null) process.stderr.write(`${result.error}\n`);
+}
 
 function configOption(argv: string[]): string | undefined {
   const index = argv.indexOf("--config");

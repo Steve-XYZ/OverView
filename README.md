@@ -38,13 +38,48 @@ source of wrong counts. If you commit under a work address, a personal address a
 GitHub noreply address, all three belong in that list.
 
 For the Linear slice, create a personal API key in Linear Settings → Security &
-access and export it before syncing. The key is sent as the `Authorization`
-header, never stored, and never leaves your machine except to `api.linear.app`:
+access and store it where both interactive and scheduled runs read it. The key
+is sent as the `Authorization` header, never stored, and never leaves your
+machine except to `api.linear.app`:
 
 ```bash
-export LINEAR_API_KEY=lin_api_...
-node dist/cli.js sync
+mkdir -p ~/.config/overview && touch ~/.config/overview/env && chmod 600 ~/.config/overview/env
 ```
+
+Then edit `~/.config/overview/env`:
+
+```bash
+LINEAR_API_KEY=lin_api_...
+OVERVIEW_PUBLISH_TOKEN=ovp_...
+```
+
+The file must be readable only by you (mode `0600`); OverView refuses to read
+it otherwise. Only `LINEAR_API_KEY`, `OVERVIEW_PUBLISH_TOKEN`, and
+`OVERVIEW_PUBLISH_URL` are imported, and variables already in the environment
+always win. Nothing in the file is ever printed to output or logs, and the
+launchd plist carries no secrets — only paths.
+
+## Automatic collection
+
+`overview collector install` registers a user LaunchAgent that runs
+`sync -> publish` every hour and at login. OverView itself holds no scheduler
+and no daemon; macOS `launchd` owns the cadence and invokes the CLI directly,
+with no shell involved:
+
+```bash
+node dist/cli.js collector install
+node dist/cli.js doctor     # confirm the next scheduled run will be complete
+node dist/cli.js collector run   # one manual pass, same as the scheduler does
+```
+
+A scheduled run is isolated by construction: a failed repository, provider, or
+publication is logged and recorded, and the next run proceeds as normal. The
+local database keeps the last good rows for whatever failed, so a partial run
+restates rather than corrupts. `overview doctor` reports the things that make
+collection silently incomplete: git/`gh`/Linear/publish credentials, missing
+repository paths, the ref actually walked and the head it saw, shallow
+checkouts, identity coverage, the last sync, the last publication, and the
+collector's own state.
 
 ## Commands
 
@@ -57,6 +92,12 @@ node dist/cli.js sync
 | `report [--days N] [--json]` | Print the metrics |
 | `publish [--endpoint <https-url>] [--snapshot-only]` | Redact and upload normalized records plus the 7/30/90-day summaries |
 | `serve [--port N] [--host H]` | Serve the dashboard |
+| `collector install [--interval <seconds>] [--now]` | Install a user LaunchAgent that runs `sync -> publish` hourly |
+| `collector run` | Perform one `sync -> publish` pass, as the scheduler would |
+| `collector status` | Show the scheduled job and the last run's outcome |
+| `collector logs [--lines N]` | Tail the scheduled job's log |
+| `collector uninstall` | Remove the scheduled job; local data and logs stay |
+| `doctor` | Diagnose what would make automatic collection incomplete |
 
 `sync` is idempotent. Every record is upserted on the source's own identifier, and
 recent commit rows that are no longer reachable are removed. Rebases and squash merges
@@ -343,11 +384,12 @@ naming one account; it does not accept a collector token. The publish API accept
 a collector token, resolves it to the account that created it, and cannot open a
 dashboard session.
 
-The command below is ready to place in a local cron or systemd timer when desired;
-OverView itself does not schedule or collect anything in the cloud:
+The command below keeps a machine current without further attention; prefer it
+over a hand-rolled cron entry. OverView itself does not schedule or collect
+anything in the cloud:
 
 ```bash
-cd /path/to/overview && node dist/cli.js sync && node dist/cli.js publish
+overview collector install
 ```
 
 ## What the numbers mean
