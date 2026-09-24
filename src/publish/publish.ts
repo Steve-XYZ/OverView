@@ -231,7 +231,7 @@ export function redactFacts(facts: LedgerFacts, config: OverviewConfig): LedgerF
       return {
         ...day,
         repositoryKey: rule.key,
-        ...(rule.redacted ? { authorEmails: [] } : {}),
+        authorEmails: rule.redacted ? [] : withoutIdentity(day.authorEmails, config),
       };
     }),
     commits: facts.commits.map((commit): CommitFact => {
@@ -378,9 +378,8 @@ export function redactForPublishing(
         slug: rule.name,
         // Local checkout paths are never useful to the hosted dashboard.
         localPath: null,
-        ...(rule.redacted
-          ? { defaultRef: null, headSha: null, authorEmails: [] }
-          : {}),
+        authorEmails: rule.redacted ? [] : withoutIdentity(status.authorEmails, config),
+        ...(rule.redacted ? { defaultRef: null, headSha: null } : {}),
       };
     }),
     linear: {
@@ -450,6 +449,15 @@ function repositoryRule(repo: RepoConfig, index: number): RepositoryRule {
     publishedName,
     redacted: repo.hostedDetail === "redacted",
   };
+}
+
+/**
+ * Observed author addresses minus the identity's own. The dashboard already knows who
+ * the identity is, so its addresses add nothing hosted and are never published.
+ */
+function withoutIdentity(emails: readonly string[], config: OverviewConfig): string[] {
+  const identity = new Set(config.identity.gitEmails.map((email) => email.toLowerCase()));
+  return emails.filter((email) => !identity.has(email.toLowerCase()));
 }
 
 function redactLocalPaths(value: string, repositories: readonly RepoConfig[]): string {

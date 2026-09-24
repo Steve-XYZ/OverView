@@ -295,7 +295,9 @@ For a redacted repository, the publisher keeps metric totals, repository identif
 PR number, issue identifier, and commit SHA, but clears URLs, commit subjects, PR and
 review titles, ref/head details, and observed author emails. `redactLinearDetails:
 true` clears every Linear title and URL. Local paths and identity Git emails are
-never published, even for detailed repositories. Redaction happens before
+never published, even for detailed repositories: a detailed repository's observed
+author addresses leave out the ones in `identity.gitEmails`, in any letter case, and
+keep everyone else's. Redaction happens before
 serialization, so a cleared field never reaches Neon at all. Local reports and the
 loopback dashboard retain full detail.
 
