@@ -51,6 +51,9 @@ export const SECRETS = [
   "Confidential pricing rewrite",
   "https://example.invalid/secret",
   WORK_EMAIL,
+  // The identity's own address is known to the dashboard already; it is never published,
+  // even from a detailed repository where it was observed.
+  HOME_EMAIL,
 ] as const;
 
 const SECRET_REPOSITORY: RepositoryRecord = {
