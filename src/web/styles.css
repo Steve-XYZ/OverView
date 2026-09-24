@@ -118,7 +118,9 @@ h2 {
 
 .theme-toggle,
 .view-toggle button,
-.segmented button {
+.segmented button,
+.range-form button,
+.range-form input {
   font: inherit;
   color: var(--text-secondary);
   background: var(--surface-1);
@@ -130,7 +132,8 @@ h2 {
 
 .theme-toggle:hover,
 .view-toggle button:hover,
-.segmented button:hover {
+.segmented button:hover,
+.range-form button:hover {
   background: var(--hover-wash);
 }
 
@@ -153,6 +156,25 @@ h2 {
 .segmented {
   display: inline-flex;
   gap: 4px;
+}
+
+.range-form {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.range-form label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.range-form input {
+  padding: 4px 8px;
+  cursor: text;
 }
 
 .segmented button.is-selected,
@@ -275,6 +297,10 @@ main[aria-busy="true"] {
 .column-hit:focus-visible {
   fill: var(--hover-wash);
   outline: none;
+}
+
+.column-wash {
+  fill: var(--hover-wash);
 }
 
 .axis-text {
@@ -445,6 +471,91 @@ a:hover {
 
 .is-hidden {
   display: none;
+}
+
+.work-heading {
+  margin: 20px 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.work-list,
+.evidence-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.work-item {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.work-item:last-child {
+  border-bottom: none;
+}
+
+.work-head,
+.evidence {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+
+.work-date {
+  min-width: 52px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.work-title {
+  font-weight: 600;
+}
+
+.work-status,
+.evidence-meta,
+.work-none {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.evidence-list {
+  margin: 6px 0 0 62px;
+}
+
+.evidence {
+  padding: 3px 0;
+  font-size: 13px;
+}
+
+.evidence-kind {
+  min-width: 48px;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.work-none {
+  margin: 4px 0 0 62px;
+}
+
+.work-more {
+  margin-top: 10px;
+}
+
+.work-more summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+
+.work-more .evidence-list {
+  margin-left: 0;
 }
 
 .empty {

@@ -33,7 +33,7 @@ import { MS_PER_HOUR, localDayKey } from "../domain/time.ts";
 import type { Db } from "../store/db.ts";
 import { collectFacts } from "../store/facts.ts";
 import { maxOf, median, minOf, percentile, sum } from "./stats.ts";
-import type { MetricWindow } from "./window.ts";
+import { historyRange, monthlyWindows, type MetricWindow } from "./window.ts";
 
 export type { LinearDataStatus } from "../domain/facts.ts";
 
@@ -124,6 +124,60 @@ export interface LinearCompletedIssue {
   readonly commits: readonly LinearLinkedCommit[];
 }
 
+/** A landed pull request as evidence for a piece of work. `via` is empty when it names no issue. */
+export interface ShippedPullRequest extends LandedPullRequest {
+  readonly via: readonly PullRequestLinkEvidence[];
+  /** Its recorded merge commit, when that commit was authored in the window. */
+  readonly commits: readonly ShippedCommit[];
+}
+
+/** An authored commit as evidence for a piece of work. `via` is null when nothing links it. */
+export interface ShippedCommit extends CommitEntry {
+  readonly via: CommitLinkEvidence | null;
+}
+
+/**
+ * A Linear issue the window's work names, or that was completed in the window.
+ *
+ * Only completed issues are published, so an issue still in progress arrives as an
+ * identifier its links name and nothing more: `state` is null and `title` empty.
+ */
+export interface ShippedIssue {
+  readonly identifier: string;
+  readonly title: string;
+  readonly url: string | null;
+  readonly teamKey: string | null;
+  readonly state: string | null;
+  readonly completedAt: string;
+  readonly completedInWindow: boolean;
+  /** The latest of its evidence in the window and its completion in the window. */
+  readonly shippedAt: string;
+  readonly pullRequests: readonly ShippedPullRequest[];
+  /** Commits naming the issue that are not the merge commit of one of `pullRequests`. */
+  readonly commits: readonly ShippedCommit[];
+}
+
+export interface ShippedWork {
+  readonly issues: readonly ShippedIssue[];
+  readonly unlinkedPullRequests: readonly ShippedPullRequest[];
+  readonly unlinkedCommits: readonly ShippedCommit[];
+}
+
+export interface MonthlyBucket {
+  /** `YYYY-MM`. */
+  readonly month: string;
+  /** The month's first day, or where history starts when that is later. */
+  readonly startDay: string;
+  /** The month's last day, or the window's when the window ends inside it. */
+  readonly endDay: string;
+  readonly days: number;
+  readonly commitsAuthored: number;
+  readonly pullRequestsMerged: number;
+  readonly reviewsGiven: number;
+  readonly activeDays: number;
+  readonly linearCompleted: number;
+}
+
 export interface ActivitySummary {
   readonly generatedAt: string;
   /** Set by the hosted read API. Local summaries intentionally omit it. */
@@ -177,6 +231,10 @@ export interface ActivitySummary {
       readonly linkedShare: number | null;
     };
   };
+  /** Every piece of work in the window, uncapped. Absent from summaries stored before it existed. */
+  readonly shipped?: ShippedWork;
+  /** Only on a dashboard read, which loads the months before the window as well. */
+  readonly trend?: readonly MonthlyBucket[];
   readonly sync: {
     readonly lastRunAt: string | null;
     readonly status: string | null;
@@ -196,41 +254,126 @@ export function buildSummary(db: Db, window: MetricWindow, identity: Identity): 
   );
 }
 
+/**
+ * The loopback dashboard's read, which also needs the months before the window. The
+ * trend starts where the last sync's window did: older rows may survive in the file,
+ * but no sync has checked them since.
+ */
+export function buildDashboardSummary(
+  db: Db,
+  window: MetricWindow,
+  identity: Identity,
+  nowMs: number,
+): ActivitySummary {
+  const facts = collectFacts(db, historyRange(window, nowMs, null), identity, window.timeZone);
+  const since = facts.collector.sync.since;
+  return summarizeWithTrend(facts, window, since === null ? null : localDayKey(Date.parse(since), window.timeZone));
+}
+
+/**
+ * `summarize`, plus the monthly trend. `facts` must reach back to
+ * `historyRange(window, now, historyFromDay)`.
+ */
+export function summarizeWithTrend(
+  facts: LedgerFacts,
+  window: MetricWindow,
+  historyFromDay: string | null,
+): ActivitySummary {
+  return { ...summarize(facts, window), trend: monthlyTrend(facts, window, historyFromDay) };
+}
+
+/**
+ * The records each count is taken over. Every figure that counts commits, pull
+ * requests or reviews starts here, whether for the window or for one month of the
+ * trend, so the two cannot count differently.
+ */
+interface WindowActivity {
+  readonly authoredCommits: readonly CommitFact[];
+  readonly opened: readonly PullRequestFact[];
+  readonly merged: readonly PullRequestFact[];
+  readonly reviews: readonly ReviewFact[];
+  readonly completedIssues: readonly LinearIssueFact[];
+}
+
+function selectActivity(facts: LedgerFacts, window: MetricWindow): WindowActivity {
+  const inRange = (ms: number): boolean => ms >= window.fromMs && ms <= window.toMs;
+  return {
+    authoredCommits: facts.commits
+      .filter((commit) => inRange(commit.authoredAtMs))
+      .sort((left, right) => right.authoredAtMs - left.authoredAtMs || left.sha.localeCompare(right.sha)),
+    opened: facts.pullRequests
+      .filter((pr) => pr.authoredByViewer && inRange(pr.createdAtMs))
+      .sort((left, right) => right.createdAtMs - left.createdAtMs || comparePullRequests(left, right)),
+    merged: facts.pullRequests
+      .filter((pr) => pr.authoredByViewer && pr.mergedAtMs !== null && inRange(pr.mergedAtMs))
+      .sort(
+        (left, right) =>
+          (right.mergedAtMs ?? 0) - (left.mergedAtMs ?? 0) || comparePullRequests(left, right),
+      ),
+    reviews: facts.reviews
+      .filter((review) => inRange(review.submittedAtMs))
+      .sort(
+        (left, right) =>
+          right.submittedAtMs - left.submittedAtMs || left.sourceId.localeCompare(right.sourceId),
+      ),
+    completedIssues: facts.linearIssues
+      .filter((issue) => issue.completedAtMs !== null && inRange(issue.completedAtMs))
+      .sort(
+        (left, right) =>
+          (right.completedAtMs ?? 0) - (left.completedAtMs ?? 0) ||
+          left.identifier.localeCompare(right.identifier),
+      ),
+  };
+}
+
+function countActiveDays(activity: WindowActivity, zone: string): number {
+  const activeDays = new Set<string>();
+  for (const commit of activity.authoredCommits) activeDays.add(localDayKey(commit.authoredAtMs, zone));
+  for (const pr of activity.opened) activeDays.add(localDayKey(pr.createdAtMs, zone));
+  for (const pr of activity.merged) activeDays.add(localDayKey(pr.mergedAtMs ?? pr.createdAtMs, zone));
+  for (const review of activity.reviews) activeDays.add(localDayKey(review.submittedAtMs, zone));
+  return activeDays.size;
+}
+
+/**
+ * One bucket per calendar month of `monthlyWindows`, each counted by the same
+ * selection as the window's own totals. Without a known start of history, months
+ * before the first one with any activity are dropped unless they overlap the
+ * window, because a run of zeros there would read as time off.
+ */
+function monthlyTrend(facts: LedgerFacts, window: MetricWindow, historyFromDay: string | null): MonthlyBucket[] {
+  const buckets = monthlyWindows(window, historyFromDay).map((month): MonthlyBucket => {
+    const activity = selectActivity(facts, month);
+    return {
+      month: month.startDayKey.slice(0, 7),
+      startDay: month.startDayKey,
+      endDay: month.endDayKey,
+      days: month.days,
+      commitsAuthored: activity.authoredCommits.length,
+      pullRequestsMerged: activity.merged.length,
+      reviewsGiven: activity.reviews.length,
+      activeDays: countActiveDays(activity, month.timeZone),
+      linearCompleted: activity.completedIssues.length,
+    };
+  });
+  if (historyFromDay !== null) return buckets;
+  const first = buckets.findIndex(
+    (bucket) => bucket.activeDays > 0 || bucket.linearCompleted > 0 || bucket.endDay >= window.startDayKey,
+  );
+  return buckets.slice(first);
+}
+
 export function summarize(facts: LedgerFacts, window: MetricWindow): ActivitySummary {
   const zone = window.timeZone;
-  const inRange = (ms: number): boolean => ms >= window.fromMs && ms <= window.toMs;
-
-  const authoredCommits = facts.commits
-    .filter((commit) => inRange(commit.authoredAtMs))
-    .sort((left, right) => right.authoredAtMs - left.authoredAtMs || left.sha.localeCompare(right.sha));
-  const opened = facts.pullRequests
-    .filter((pr) => pr.authoredByViewer && inRange(pr.createdAtMs))
-    .sort((left, right) => right.createdAtMs - left.createdAtMs || comparePullRequests(left, right));
-  const merged = facts.pullRequests
-    .filter((pr) => pr.authoredByViewer && pr.mergedAtMs !== null && inRange(pr.mergedAtMs))
-    .sort(
-      (left, right) =>
-        (right.mergedAtMs ?? 0) - (left.mergedAtMs ?? 0) || comparePullRequests(left, right),
-    );
-  const reviews = facts.reviews
-    .filter((review) => inRange(review.submittedAtMs))
-    .sort(
-      (left, right) =>
-        right.submittedAtMs - left.submittedAtMs || left.sourceId.localeCompare(right.sourceId),
-    );
+  const activity = selectActivity(facts, window);
+  const { authoredCommits, merged, reviews } = activity;
 
   const mergeHours = merged.map((pr) => ((pr.mergedAtMs ?? 0) - pr.createdAtMs) / MS_PER_HOUR);
-
-  const activeDays = new Set<string>();
-  for (const commit of authoredCommits) activeDays.add(localDayKey(commit.authoredAtMs, zone));
-  for (const pr of opened) activeDays.add(localDayKey(pr.createdAtMs, zone));
-  for (const pr of merged) activeDays.add(localDayKey(pr.mergedAtMs ?? pr.createdAtMs, zone));
-  for (const review of reviews) activeDays.add(localDayKey(review.submittedAtMs, zone));
 
   const name = repositoryNames(facts.repositories);
   const titles = pullRequestTitles(facts.pullRequests);
   const repositories = buildRepositoryStatus(facts, window, merged);
-  const linear = buildLinearSection(facts, window, merged, authoredCommits, name, titles);
+  const links = linkEvidence(facts, activity, name, titles);
 
   return {
     generatedAt: new Date().toISOString(),
@@ -248,13 +391,13 @@ export function summarize(facts: LedgerFacts, window: MetricWindow): ActivitySum
     },
     totals: {
       commitsAuthored: authoredCommits.length,
-      pullRequestsOpened: opened.length,
+      pullRequestsOpened: activity.opened.length,
       pullRequestsMerged: merged.length,
       reviewsGiven: reviews.length,
       pullRequestsReviewed: new Set(
         reviews.map((review) => pullRequestFactKey(review.repositoryKey, review.pullRequestNumber)),
       ).size,
-      activeDays: activeDays.size,
+      activeDays: countActiveDays(activity, zone),
       additions: sum(authoredCommits.map((c) => c.additions)),
       deletions: sum(authoredCommits.map((c) => c.deletions)),
       filesChanged: sum(authoredCommits.map((c) => c.filesChanged)),
@@ -269,28 +412,8 @@ export function summarize(facts: LedgerFacts, window: MetricWindow): ActivitySum
       slowest: maxOf(mergeHours),
     },
     daily: buildDaily(window, authoredCommits, merged, reviews),
-    landedPullRequests: merged.slice(0, MAX_TABLE_ROWS).map((pr) => ({
-      repository: name(pr.repositoryKey),
-      number: pr.number,
-      title: pr.title,
-      mergedAt: factIso(pr.mergedAtMs),
-      mergeHours: ((pr.mergedAtMs ?? 0) - pr.createdAtMs) / MS_PER_HOUR,
-      additions: pr.additions,
-      deletions: pr.deletions,
-      changedFiles: pr.changedFiles,
-      url: pr.sourceUrl,
-    })),
-    recentCommits: authoredCommits.slice(0, MAX_TABLE_ROWS).map((commit) => ({
-      repository: name(commit.repositoryKey),
-      sha: commit.sha,
-      shortSha: commit.sha.slice(0, 8),
-      subject: commit.subject,
-      committedAt: factIso(commit.committedAtMs),
-      authoredAt: factIso(commit.authoredAtMs),
-      additions: commit.additions,
-      deletions: commit.deletions,
-      url: commit.sourceUrl,
-    })),
+    landedPullRequests: merged.slice(0, MAX_TABLE_ROWS).map(links.landed),
+    recentCommits: authoredCommits.slice(0, MAX_TABLE_ROWS).map(links.commit),
     recentReviews: reviews.slice(0, MAX_TABLE_ROWS).map((review) => ({
       repository: name(review.repositoryKey),
       pullRequestNumber: review.pullRequestNumber,
@@ -300,7 +423,8 @@ export function summarize(facts: LedgerFacts, window: MetricWindow): ActivitySum
       url: review.sourceUrl,
     })),
     repositories,
-    linear,
+    linear: buildLinearSection(facts, activity, links),
+    shipped: buildShipped(facts, activity, links),
     sync: {
       lastRunAt: facts.collector.sync.lastRunAt,
       status: facts.collector.sync.status,
@@ -411,9 +535,14 @@ function buildRepositoryStatus(
     });
 }
 
+interface IssueLink<Via> {
+  readonly identifier: string;
+  readonly via: Via;
+}
+
 /**
- * Completed Linear issues in the window, each with the window's PRs and commits
- * that named it.
+ * Which issues the window's pull requests and commits name, and the display rows
+ * both the Linear section and the shipped-work timeline build from them.
  *
  * Links arrive as facts because they were read from a title, a branch name or a
  * commit subject — the strings publishing removes. One kind is still derived here:
@@ -421,36 +550,40 @@ function buildRepositoryStatus(
  * belongs to that pull request's issues, and whether the pull request landed in
  * *this* window is what decides it, so it cannot be settled at publication time.
  */
-function buildLinearSection(
+interface LinkEvidence {
+  readonly landed: (pr: PullRequestFact) => LandedPullRequest;
+  readonly commit: (commit: CommitFact) => CommitEntry;
+  readonly pullRequestLinks: (pr: PullRequestFact) => readonly IssueLink<readonly PullRequestLinkEvidence[]>[];
+  readonly commitLinks: (commit: CommitFact) => readonly IssueLink<CommitLinkEvidence>[];
+  readonly name: (repositoryKey: string) => string;
+  readonly titles: ReadonlyMap<string, string>;
+}
+
+function linkEvidence(
   facts: LedgerFacts,
-  window: MetricWindow,
-  merged: readonly PullRequestFact[],
-  authoredCommits: readonly CommitFact[],
+  activity: WindowActivity,
   name: (repositoryKey: string) => string,
   titles: ReadonlyMap<string, string>,
-): ActivitySummary["linear"] {
-  const linksByPullRequest = new Map<string, { identifier: string; via: readonly PullRequestLinkEvidence[] }[]>();
+): LinkEvidence {
+  const linksByPullRequest = new Map<string, IssueLink<readonly PullRequestLinkEvidence[]>[]>();
   for (const link of facts.pullRequestLinks) {
     const key = pullRequestFactKey(link.repositoryKey, link.pullRequestNumber);
     const list = linksByPullRequest.get(key) ?? [];
     list.push({ identifier: link.issueIdentifier, via: link.via });
     linksByPullRequest.set(key, list);
   }
-
-  const prLinks = merged.map((pr) => ({
-    pr,
-    links: linksByPullRequest.get(pullRequestFactKey(pr.repositoryKey, pr.number)) ?? [],
-  }));
-  const linkedPullRequests = prLinks.filter((entry) => entry.links.length > 0).length;
+  const pullRequestLinks = (pr: PullRequestFact): readonly IssueLink<readonly PullRequestLinkEvidence[]>[] =>
+    linksByPullRequest.get(pullRequestFactKey(pr.repositoryKey, pr.number)) ?? [];
 
   // Squash commits often drop the issue key from their subject. When a commit is
   // the recorded merge commit of a linked PR, it belongs to the same issues.
   const mergeShaToIdentifiers = new Map<string, string[]>();
-  for (const entry of prLinks) {
-    const sha = entry.pr.mergeCommitSha;
-    if (sha === null || entry.links.length === 0) continue;
+  for (const pr of activity.merged) {
+    const sha = pr.mergeCommitSha;
+    const links = pullRequestLinks(pr);
+    if (sha === null || links.length === 0) continue;
     const existing = mergeShaToIdentifiers.get(sha.toLowerCase());
-    const identifiers = entry.links.map((link) => link.identifier);
+    const identifiers = links.map((link) => link.identifier);
     if (existing === undefined) mergeShaToIdentifiers.set(sha.toLowerCase(), [...identifiers]);
     else for (const identifier of identifiers) {
       if (!existing.includes(identifier)) existing.push(identifier);
@@ -463,17 +596,70 @@ function buildLinearSection(
     list.push(link);
     subjectLinks.set(link.sha.toLowerCase(), list);
   }
+  const commitLinks = (commit: CommitFact): readonly IssueLink<CommitLinkEvidence>[] => {
+    const direct = (subjectLinks.get(commit.sha.toLowerCase()) ?? []).filter(
+      (link) => link.repositoryKey === commit.repositoryKey,
+    );
+    const directIds = new Set(direct.map((link) => link.issueIdentifier));
+    const links: IssueLink<CommitLinkEvidence>[] = direct.map((link) => ({
+      identifier: link.issueIdentifier,
+      via: link.via,
+    }));
+    for (const identifier of mergeShaToIdentifiers.get(commit.sha.toLowerCase()) ?? []) {
+      if (!directIds.has(identifier)) links.push({ identifier, via: "pr_merge_commit" });
+    }
+    return links;
+  };
+
+  return {
+    landed: (pr) => ({
+      repository: name(pr.repositoryKey),
+      number: pr.number,
+      title: pr.title,
+      mergedAt: factIso(pr.mergedAtMs),
+      mergeHours: ((pr.mergedAtMs ?? 0) - pr.createdAtMs) / MS_PER_HOUR,
+      additions: pr.additions,
+      deletions: pr.deletions,
+      changedFiles: pr.changedFiles,
+      url: pr.sourceUrl,
+    }),
+    commit: (commit) => ({
+      repository: name(commit.repositoryKey),
+      sha: commit.sha,
+      shortSha: commit.sha.slice(0, 8),
+      subject: commit.subject,
+      committedAt: factIso(commit.committedAtMs),
+      authoredAt: factIso(commit.authoredAtMs),
+      additions: commit.additions,
+      deletions: commit.deletions,
+      url: commit.sourceUrl,
+    }),
+    pullRequestLinks,
+    commitLinks,
+    name,
+    titles,
+  };
+}
+
+/** Completed Linear issues in the window, each with the window's PRs and commits that named it. */
+function buildLinearSection(
+  facts: LedgerFacts,
+  activity: WindowActivity,
+  links: LinkEvidence,
+): ActivitySummary["linear"] {
+  const { merged, authoredCommits, completedIssues: completed } = activity;
+  const linkedPullRequests = merged.filter((pr) => links.pullRequestLinks(pr).length > 0).length;
 
   const prsByIssue = new Map<string, LinearLinkedPullRequest[]>();
-  for (const entry of prLinks) {
-    for (const link of entry.links) {
+  for (const pr of merged) {
+    for (const link of links.pullRequestLinks(pr)) {
       const list = prsByIssue.get(link.identifier) ?? [];
       list.push({
-        repository: name(entry.pr.repositoryKey),
-        number: entry.pr.number,
-        title: titles.get(pullRequestFactKey(entry.pr.repositoryKey, entry.pr.number)) ?? "",
-        mergedAt: factIso(entry.pr.mergedAtMs),
-        url: entry.pr.sourceUrl,
+        repository: links.name(pr.repositoryKey),
+        number: pr.number,
+        title: links.titles.get(pullRequestFactKey(pr.repositoryKey, pr.number)) ?? "",
+        mergedAt: factIso(pr.mergedAtMs),
+        url: pr.sourceUrl,
         via: link.via,
       });
       prsByIssue.set(link.identifier, list);
@@ -482,21 +668,10 @@ function buildLinearSection(
 
   const commitsByIssue = new Map<string, LinearLinkedCommit[]>();
   for (const commit of authoredCommits) {
-    const direct = (subjectLinks.get(commit.sha.toLowerCase()) ?? []).filter(
-      (link) => link.repositoryKey === commit.repositoryKey,
-    );
-    const directIds = new Set(direct.map((link) => link.issueIdentifier));
-    const links: { identifier: string; via: CommitLinkEvidence }[] = direct.map((link) => ({
-      identifier: link.issueIdentifier,
-      via: link.via,
-    }));
-    for (const identifier of mergeShaToIdentifiers.get(commit.sha.toLowerCase()) ?? []) {
-      if (!directIds.has(identifier)) links.push({ identifier, via: "pr_merge_commit" });
-    }
-    for (const link of links) {
+    for (const link of links.commitLinks(commit)) {
       const list = commitsByIssue.get(link.identifier) ?? [];
       list.push({
-        repository: name(commit.repositoryKey),
+        repository: links.name(commit.repositoryKey),
         sha: commit.sha,
         shortSha: commit.sha.slice(0, 8),
         subject: commit.subject,
@@ -507,19 +682,6 @@ function buildLinearSection(
       commitsByIssue.set(link.identifier, list);
     }
   }
-
-  const completed = facts.linearIssues
-    .filter(
-      (issue) =>
-        issue.completedAtMs !== null &&
-        issue.completedAtMs >= window.fromMs &&
-        issue.completedAtMs <= window.toMs,
-    )
-    .sort(
-      (left, right) =>
-        (right.completedAtMs ?? 0) - (left.completedAtMs ?? 0) ||
-        left.identifier.localeCompare(right.identifier),
-    );
 
   return {
     syncStatus: facts.collector.linearSyncStatus,
@@ -540,6 +702,101 @@ function buildLinearSection(
       unlinkedPullRequests: merged.length - linkedPullRequests,
       linkedShare: merged.length === 0 ? null : linkedPullRequests / merged.length,
     },
+  };
+}
+
+/**
+ * Every landed pull request and authored commit in the window, grouped under the
+ * issues they name, plus the issues completed in the window. What names no issue
+ * stays visible on its own: a pull request with its squash commit, and the commits
+ * left over. A pull request naming two issues is evidence for both.
+ */
+function buildShipped(facts: LedgerFacts, activity: WindowActivity, links: LinkEvidence): ShippedWork {
+  interface IssueWork {
+    readonly prs: ShippedPullRequest[];
+    readonly commits: ShippedCommit[];
+    /** Merge commit SHA to the commit list of the issue's pull request it merged. */
+    readonly bySquash: Map<string, ShippedCommit[]>;
+    latestMs: number;
+  }
+  const issues = new Map<string, IssueWork>();
+  const issueWork = (identifier: string): IssueWork => {
+    let work = issues.get(identifier);
+    if (work === undefined) {
+      work = { prs: [], commits: [], bySquash: new Map(), latestMs: 0 };
+      issues.set(identifier, work);
+    }
+    return work;
+  };
+  const shippedPullRequest = (
+    pr: PullRequestFact,
+    via: readonly PullRequestLinkEvidence[],
+    bySquash: Map<string, ShippedCommit[]>,
+  ): ShippedPullRequest => {
+    const commits: ShippedCommit[] = [];
+    if (pr.mergeCommitSha !== null) bySquash.set(pr.mergeCommitSha.toLowerCase(), commits);
+    return { ...links.landed(pr), via, commits };
+  };
+
+  const unlinkedPullRequests: ShippedPullRequest[] = [];
+  const unlinkedBySquash = new Map<string, ShippedCommit[]>();
+  for (const pr of activity.merged) {
+    const prLinks = links.pullRequestLinks(pr);
+    if (prLinks.length === 0) unlinkedPullRequests.push(shippedPullRequest(pr, [], unlinkedBySquash));
+    for (const link of prLinks) {
+      const work = issueWork(link.identifier);
+      work.prs.push(shippedPullRequest(pr, link.via, work.bySquash));
+      work.latestMs = Math.max(work.latestMs, pr.mergedAtMs ?? 0);
+    }
+  }
+
+  // A commit sits under the pull request it is the merge commit of, wherever that
+  // pull request is listed, so each piece of work is one entry with its evidence.
+  const unlinkedCommits: ShippedCommit[] = [];
+  for (const commit of activity.authoredCommits) {
+    const sha = commit.sha.toLowerCase();
+    const commitLinks = links.commitLinks(commit);
+    for (const link of commitLinks) {
+      const work = issueWork(link.identifier);
+      (work.bySquash.get(sha) ?? work.commits).push({ ...links.commit(commit), via: link.via });
+      work.latestMs = Math.max(work.latestMs, commit.authoredAtMs);
+    }
+    if (commitLinks.length > 0) continue;
+    const squashOf = unlinkedBySquash.get(sha);
+    if (squashOf !== undefined) squashOf.push({ ...links.commit(commit), via: "pr_merge_commit" });
+    else unlinkedCommits.push({ ...links.commit(commit), via: null });
+  }
+
+  const completedInWindow = new Set(activity.completedIssues.map((issue) => issue.identifier));
+  for (const issue of activity.completedIssues) {
+    const work = issueWork(issue.identifier);
+    work.latestMs = Math.max(work.latestMs, issue.completedAtMs ?? 0);
+  }
+  const records = new Map(facts.linearIssues.map((issue) => [issue.identifier, issue]));
+
+  return {
+    issues: [...issues.entries()]
+      .map(([identifier, work]): ShippedIssue => {
+        const record = records.get(identifier);
+        return {
+          identifier,
+          title: record?.title ?? "",
+          url: record?.sourceUrl ?? null,
+          teamKey: record?.teamKey ?? null,
+          state: record?.stateName ?? null,
+          completedAt: factIso(record?.completedAtMs ?? null),
+          completedInWindow: completedInWindow.has(identifier),
+          shippedAt: factIso(work.latestMs),
+          pullRequests: work.prs,
+          commits: work.commits,
+        };
+      })
+      .sort(
+        (left, right) =>
+          right.shippedAt.localeCompare(left.shippedAt) || left.identifier.localeCompare(right.identifier),
+      ),
+    unlinkedPullRequests,
+    unlinkedCommits,
   };
 }
 
@@ -613,4 +870,13 @@ const DEFINITIONS: Readonly<Record<string, string>> = {
     "when the identifier matches an issue already in the database; each link keeps whether " +
     "it came from the title or the branch. Commits link the same way through their subject, " +
     "or as the squash commit of a linked pull request.",
+  shippedWork:
+    "Every pull request you landed and every commit you authored in the range, grouped under " +
+    "the Linear issue its title, branch or subject names, plus the issues completed in the " +
+    "range. A pull request naming two issues is listed under both. Work that names no issue " +
+    "is listed separately: each landed pull request with its squash commit, then the other commits.",
+  monthlyTrend:
+    "Calendar months up to the end of the range, up to twelve or the range's length, counted " +
+    "with the same rules as the totals. Nothing before the start of synced or published " +
+    "history is counted, so the first month may be partial.",
 };

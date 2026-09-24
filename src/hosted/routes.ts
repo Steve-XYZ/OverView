@@ -29,8 +29,15 @@ import {
   MAX_PUBLICATION_BYTES,
   type WindowKey,
 } from "../publish/publish.ts";
-import { summarize } from "../metrics/summary.ts";
-import { createWindow } from "../metrics/window.ts";
+import { localDayKey } from "../domain/time.ts";
+import { summarizeWithTrend } from "../metrics/summary.ts";
+import {
+  createRangeWindow,
+  createWindow,
+  historyRange,
+  parseRangeWindow,
+  RANGE_ERROR,
+} from "../metrics/window.ts";
 
 const MAX_TOKEN_NAME = 60;
 const HOSTED_WINDOWS = new Set([7, 30, 90]);
@@ -115,10 +122,13 @@ export function handleLogout(request: Request): Response {
  * The dashboard read.
  *
  * The ledger answers when the account has published one: the window is built in the
- * collector's zone, the facts for that range are read, and the same `summarize` the
- * local report uses derives the numbers. An account that has only ever published
- * snapshots — or a request that explicitly asks for `source=snapshot`, which is how
- * the two paths get compared — reads the stored summary instead.
+ * collector's zone, the facts for that range and the trend before it are read, and
+ * the same `summarize` the local report uses derives the numbers. A window is either
+ * `days` (7, 30 or 90) or an explicit `from`/`to` pair of local days, and neither
+ * reaches before the start of published coverage. An account that
+ * has only ever published snapshots — or a request that explicitly asks for
+ * `source=snapshot`, which is how the two paths get compared — reads the stored
+ * summary instead, which exists for the three fixed windows only.
  */
 export async function handleSummary(request: Request, deps: SessionDeps): Promise<Response> {
   const user = await currentUser(request, deps);
@@ -127,24 +137,46 @@ export async function handleSummary(request: Request, deps: SessionDeps): Promis
   const url = new URL(request.url);
   const requested = Number(url.searchParams.get("days") ?? 30);
   const days = HOSTED_WINDOWS.has(requested) ? requested : 30;
+  const from = url.searchParams.get("from");
+  const to = url.searchParams.get("to");
+  const isRange = from !== null || to !== null;
   const requestedSource = url.searchParams.get("source");
   if (requestedSource !== null && requestedSource !== "ledger" && requestedSource !== "snapshot") {
     return json(400, { error: "source must be ledger or snapshot." });
   }
   const account = { githubLogin: user.githubLogin };
 
+  if (isRange && requestedSource === "snapshot") {
+    return json(400, { error: "Stored snapshots cover 7, 30 and 90 days only." });
+  }
+
   if (requestedSource !== "snapshot") {
     const ledger = await deps.store.getLedgerHead(user.id);
     if (ledger !== null) {
-      const window = createWindow(days, deps.now ?? Date.now(), ledger.collector.timeZone);
-      const records = await deps.store.readLedgerRecords(user.id, {
-        fromMs: window.fromMs,
-        toMs: window.toMs,
-        fromDay: window.startDayKey,
-        toDay: window.endDayKey,
-      });
+      const now = deps.now ?? Date.now();
+      const zone = ledger.collector.timeZone;
+      const requestedWindow = isRange ? parseRangeWindow(from, to, now, zone) : createWindow(days, now, zone);
+      if (requestedWindow === null) return json(400, { error: RANGE_ERROR });
+      // Before the history start a record may predate today's redaction rules.
+      const history = localDayKey(ledger.historyFromMs, zone);
+      if (requestedWindow.endDayKey < history) {
+        return json(400, { error: `Published history starts on ${history}; choose a range that reaches it.` });
+      }
+      const shortened = requestedWindow.startDayKey < history;
+      const window = shortened
+        ? createRangeWindow(history, requestedWindow.endDayKey, now, zone)
+        : requestedWindow;
+      const records = await deps.store.readLedgerRecords(user.id, historyRange(window, now, ledger.historyFromMs));
+      const summary = summarizeWithTrend({ collector: ledger.collector, ...records }, window, history);
       return json(200, {
-        ...summarize({ collector: ledger.collector, ...records }, window),
+        ...summary,
+        warnings: shortened
+          ? [
+              `Published history starts on ${history}, so the range starts there. ` +
+                "Publishing a longer sync.sinceDays reaches further back.",
+              ...summary.warnings,
+            ]
+          : summary.warnings,
         publishedAt: ledger.publishedAt,
         account,
         source: "ledger",
@@ -157,6 +189,11 @@ export async function handleSummary(request: Request, deps: SessionDeps): Promis
 
   const current = await deps.store.getSnapshot(user.id);
   if (current === null) return json(404, { error: "Nothing has been published yet." });
+  if (isRange) {
+    return json(409, {
+      error: "A custom range is computed from published facts. Run `overview publish` with a current collector.",
+    });
+  }
   return json(200, {
     ...current.snapshots[String(days) as WindowKey],
     publishedAt: current.publishedAt,

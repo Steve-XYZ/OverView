@@ -255,6 +255,9 @@ function comparable(summary: ActivitySummary): unknown {
     publishedAt: _publishedAt,
     account: _account,
     source: _source,
+    // Snapshots carry neither the trend nor the timeline; a dashboard read adds both.
+    trend: _trend,
+    shipped: _shipped,
     ...rest
   } = summary;
   return rest;

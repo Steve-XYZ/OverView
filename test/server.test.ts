@@ -38,6 +38,24 @@ describe("the local server", () => {
     assert.equal(summary.window.days, 30);
   });
 
+  it("serves a summary for an explicit range, with the trend and the timeline", async () => {
+    const to = new Date().toLocaleDateString("en-CA");
+    const from = new Date(Date.now() - 6 * 86_400_000).toLocaleDateString("en-CA");
+    const response = await fetch(`http://127.0.0.1:${server.port}/api/summary?from=${from}&to=${to}`);
+    assert.equal(response.status, 200);
+    const summary = (await response.json()) as ActivitySummary;
+    assert.equal(summary.window.startDay, from);
+    assert.equal(summary.window.days, 7);
+    assert.deepEqual(summary.shipped?.unlinkedCommits.map((entry) => entry.sha), ["srv1"]);
+    assert.equal(summary.trend?.at(-1)?.month, to.slice(0, 7));
+    assert.equal(summary.trend?.reduce((acc, month) => acc + month.commitsAuthored, 0), 1);
+  });
+
+  it("refuses a malformed range rather than answering another one", async () => {
+    const response = await fetch(`http://127.0.0.1:${server.port}/api/summary?from=2026-02-30&to=2026-03-01`);
+    assert.equal(response.status, 400);
+  });
+
   it("answers a health check", async () => {
     const response = await fetch(`http://127.0.0.1:${server.port}/api/health`);
     assert.equal(response.status, 200);

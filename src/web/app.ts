@@ -11,11 +11,19 @@
  * because light-mode aqua sits below 3:1 against the surface.
  */
 
-import type { ActivitySummary, DailyBucket } from "../metrics/summary.ts";
+import type {
+  ActivitySummary,
+  MonthlyBucket,
+  ShippedCommit,
+  ShippedIssue,
+  ShippedPullRequest,
+} from "../metrics/summary.ts";
 import { formatHours, formatLocalDay } from "../report/text.ts";
 
+type SeriesKey = "commitsAuthored" | "pullRequestsMerged" | "reviewsGiven";
+
 interface Series {
-  readonly key: "commitsAuthored" | "pullRequestsMerged" | "reviewsGiven";
+  readonly key: SeriesKey;
   readonly label: string;
   readonly color: string;
 }
@@ -34,37 +42,54 @@ const MAX_BAR_WIDTH = 24;
 const SEGMENT_GAP = 2;
 const CAP_RADIUS = 4;
 
-let currentDays: number = readDaysFromHash() ?? 30;
+/** One chart column: a day of the daily chart or a month of the trend. */
+interface Column {
+  readonly tick: string;
+  readonly title: string;
+  readonly commitsAuthored: number;
+  readonly pullRequestsMerged: number;
+  readonly reviewsGiven: number;
+  /** Drawn with a wash behind it: the trend's months that overlap the selected range. */
+  readonly highlighted: boolean;
+}
+
+/** A shortcut (`days`) or an explicit pair of local days. */
+type Selection = { readonly days: number } | { readonly from: string; readonly to: string };
+
+let selection: Selection = readSelectionFromHash() ?? { days: 30 };
 let currentSummary: ActivitySummary | null = null;
-let chartView: "chart" | "table" = "chart";
 
 void main();
 
 async function main(): Promise<void> {
   buildRangeControl();
-  wireViewToggle();
+  wireRangeForm();
+  for (const toggle of document.querySelectorAll<HTMLElement>(".view-toggle")) wireViewToggle(toggle);
   wireThemeToggle();
 
   let resizeTimer = 0;
   window.addEventListener("resize", () => {
     window.clearTimeout(resizeTimer);
     resizeTimer = window.setTimeout(() => {
-      if (currentSummary !== null) drawChart(currentSummary);
+      if (currentSummary !== null) drawCharts(currentSummary);
     }, 120);
   });
 
-  await load(currentDays);
+  await load(selection);
 }
 
-async function load(days: number): Promise<void> {
-  currentDays = days;
-  window.location.hash = `days=${days}`;
+async function load(next: Selection): Promise<void> {
+  selection = next;
+  const query = new URLSearchParams(
+    "days" in next ? { days: String(next.days) } : { from: next.from, to: next.to },
+  ).toString();
+  window.location.hash = query;
   const main = byId("main");
   main.setAttribute("aria-busy", "true");
-  markSelected("#range-control", String(days));
+  markSelected("#range-control", "days" in next ? String(next.days) : "");
 
   try {
-    const response = await fetch(`/api/summary?days=${days}`);
+    const response = await fetch(`/api/summary?${query}`);
     // A hosted account exists from first sign-in, before its collector has published
     // anything. That empty state is the first thing a new account sees, so it needs
     // the next step named rather than a status code at the foot of the page.
@@ -72,7 +97,7 @@ async function load(days: number): Promise<void> {
       showAwaitingFirstPublication();
       return;
     }
-    if (!response.ok) throw new Error(`The server answered ${response.status}.`);
+    if (!response.ok) throw new Error(await errorMessage(response));
     currentSummary = (await response.json()) as ActivitySummary;
     render(currentSummary);
   } catch (error) {
@@ -117,19 +142,25 @@ function render(summary: ActivitySummary): void {
         ? "Never synced — run `overview sync`"
         : `Last synced ${formatRelative(summary.sync.lastRunAt)} (${summary.sync.status})`;
 
+  const period = describePeriod(summary);
   byId("hero-value").textContent = formatCount(t.pullRequestsMerged);
   byId("hero-note").textContent =
     t.pullRequestsMerged === 0
-      ? `Nothing merged in the last ${summary.window.days} days.`
-      : `Merged in the last ${summary.window.days} days · median ${formatHours(
+      ? `Nothing merged ${period}.`
+      : `Merged ${period} · median ${formatHours(
           summary.mergeTimeHours.median,
         )} from open to merge · ${formatCount(t.pullRequestsOpened)} opened.`;
 
+  const from = byId("range-from") as HTMLInputElement;
+  const to = byId("range-to") as HTMLInputElement;
+  from.value = summary.window.startDay;
+  to.value = summary.window.endDay;
+
   renderKpis(summary);
-  drawChart(summary);
+  drawCharts(summary);
   renderChartTable(summary);
-  renderPullRequests(summary);
-  renderLinear(summary);
+  renderTrendTable(summary);
+  renderShipped(summary);
   renderCommits(summary);
   renderReviews(summary);
   renderRepositories(summary);
@@ -194,20 +225,44 @@ function renderKpis(summary: ActivitySummary): void {
 
 /* -------------------------------------------------------------------- chart */
 
-function drawChart(summary: ActivitySummary): void {
-  const holder = byId("chart-holder");
-  const daily = summary.daily;
-
+function drawCharts(summary: ActivitySummary): void {
   byId("chart-sub").textContent =
     `Commits, merges and reviews per local calendar day, ${summary.window.startDay} to ` +
     `${summary.window.endDay}.`;
-  renderLegend();
+  drawChart(
+    byId("chart-holder"),
+    summary.daily.map((day) => ({ ...day, tick: shortDate(day.date), title: longDate(day.date), highlighted: false })),
+    `Daily activity from ${summary.window.startDay} to ${summary.window.endDay}`,
+    `No recorded activity ${describePeriod(summary)}.`,
+  );
+  renderLegend("chart-legend");
 
-  const total = daily.reduce((acc, day) => acc + dayTotal(day), 0);
+  const trend = summary.trend;
+  byId("trend-card").hidden = trend === undefined;
+  if (trend === undefined) return;
+  byId("trend-sub").textContent =
+    `Calendar months from ${trend[0]?.startDay ?? summary.window.startDay} to ${summary.window.endDay}, ` +
+    "counted exactly as the totals above. " +
+    "Shaded months overlap the selected range; the table adds active days and Linear completions.";
+  drawChart(
+    byId("trend-holder"),
+    trend.map((month) => ({
+      ...month,
+      tick: monthLabel(month, false),
+      title: monthLabel(month, true),
+      highlighted: month.endDay >= summary.window.startDay,
+    })),
+    `Monthly activity to ${summary.window.endDay}`,
+    "No recorded activity in these months.",
+  );
+  renderLegend("trend-legend");
+}
+
+function drawChart(holder: HTMLElement, columns: readonly Column[], label: string, empty: string): void {
+  if (holder.classList.contains("is-hidden")) return;
+  const total = columns.reduce((acc, column) => acc + columnTotal(column), 0);
   if (total === 0) {
-    holder.replaceChildren(
-      text("p", "chart-empty", `No recorded activity in the last ${summary.window.days} days.`),
-    );
+    holder.replaceChildren(text("p", "chart-empty", empty));
     return;
   }
 
@@ -216,18 +271,24 @@ function drawChart(summary: ActivitySummary): void {
   const innerHeight = CHART_HEIGHT - MARGIN.top - MARGIN.bottom;
   const baselineY = MARGIN.top + innerHeight;
 
-  const peak = Math.max(...daily.map(dayTotal));
+  const peak = Math.max(...columns.map(columnTotal));
   const { max: axisMax, step } = niceScale(peak);
   const scale = innerHeight / axisMax;
 
   const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("viewBox", `0 0 ${width} ${CHART_HEIGHT}`);
   svg.setAttribute("role", "img");
-  svg.setAttribute(
-    "aria-label",
-    `Daily activity from ${summary.window.startDay} to ${summary.window.endDay}. ` +
-      `Peak ${peak} events in a day. The table view lists every value.`,
-  );
+  svg.setAttribute("aria-label", `${label}. Peak ${peak} events. The table view lists every value.`);
+
+  const band = innerWidth / columns.length;
+  const barWidth = Math.max(2, Math.min(MAX_BAR_WIDTH, band - 2));
+
+  columns.forEach((column, index) => {
+    if (!column.highlighted) return;
+    const wash = plainRect(MARGIN.left + index * band, MARGIN.top, band, innerHeight);
+    wash.setAttribute("class", "column-wash");
+    svg.append(wash);
+  });
 
   // Gridlines and y ticks.
   for (let value = 0; value <= axisMax; value += step) {
@@ -240,27 +301,24 @@ function drawChart(summary: ActivitySummary): void {
     line.setAttribute("class", value === 0 ? "baseline" : "gridline");
     svg.append(line);
 
-    const label = document.createElementNS(SVG_NS, "text");
-    label.setAttribute("x", String(MARGIN.left - 8));
-    label.setAttribute("y", String(y + 4));
-    label.setAttribute("text-anchor", "end");
-    label.setAttribute("class", "axis-text");
-    label.textContent = String(value);
-    svg.append(label);
+    const tick = document.createElementNS(SVG_NS, "text");
+    tick.setAttribute("x", String(MARGIN.left - 8));
+    tick.setAttribute("y", String(y + 4));
+    tick.setAttribute("text-anchor", "end");
+    tick.setAttribute("class", "axis-text");
+    tick.textContent = String(value);
+    svg.append(tick);
   }
 
-  const band = innerWidth / daily.length;
-  const barWidth = Math.max(2, Math.min(MAX_BAR_WIDTH, band - 2));
-
-  daily.forEach((day, index) => {
+  columns.forEach((column, index) => {
     const bandX = MARGIN.left + index * band;
     const x = bandX + (band - barWidth) / 2;
-    const topKey = SERIES.filter((s) => day[s.key] > 0).at(-1)?.key;
+    const topKey = SERIES.filter((s) => column[s.key] > 0).at(-1)?.key;
 
     let cursor = baselineY;
     let isBottomDrawn = true;
     for (const series of SERIES) {
-      const value = day[series.key];
+      const value = column[series.key];
       if (value === 0) continue;
       const rawHeight = value * scale;
       const shave = isBottomDrawn ? 0 : SEGMENT_GAP;
@@ -287,37 +345,37 @@ function drawChart(summary: ActivitySummary): void {
     hit.setAttribute("class", "column-hit");
     hit.setAttribute("tabindex", "0");
     hit.setAttribute("role", "img");
-    hit.setAttribute("aria-label", describeDay(day));
-    hit.addEventListener("pointermove", (event) => showTooltip(day, event.clientX, event.clientY));
+    hit.setAttribute("aria-label", describeColumn(column));
+    hit.addEventListener("pointermove", (event) => showTooltip(column, event.clientX, event.clientY));
     hit.addEventListener("pointerleave", hideTooltip);
     hit.addEventListener("focus", () => {
       const box = hit.getBoundingClientRect();
-      showTooltip(day, box.left + box.width / 2, box.top + box.height / 2);
+      showTooltip(column, box.left + box.width / 2, box.top + box.height / 2);
     });
     hit.addEventListener("blur", hideTooltip);
     svg.append(hit);
   });
 
-  // Roughly six date ticks, always including the first and last day.
-  const tickEvery = Math.max(1, Math.round(daily.length / 6));
-  daily.forEach((day, index) => {
-    const isEdge = index === 0 || index === daily.length - 1;
+  // Roughly six ticks, always including the first and last column.
+  const tickEvery = Math.max(1, Math.round(columns.length / 6));
+  columns.forEach((column, index) => {
+    const isEdge = index === 0 || index === columns.length - 1;
     if (!isEdge && index % tickEvery !== 0) return;
-    if (!isEdge && index > daily.length - tickEvery) return;
-    const label = document.createElementNS(SVG_NS, "text");
-    label.setAttribute("x", String(MARGIN.left + index * band + band / 2));
-    label.setAttribute("y", String(baselineY + 16));
-    label.setAttribute("text-anchor", index === daily.length - 1 ? "end" : "middle");
-    label.setAttribute("class", "axis-text");
-    label.textContent = shortDate(day.date);
-    svg.append(label);
+    if (!isEdge && index > columns.length - tickEvery) return;
+    const tick = document.createElementNS(SVG_NS, "text");
+    tick.setAttribute("x", String(MARGIN.left + index * band + band / 2));
+    tick.setAttribute("y", String(baselineY + 16));
+    tick.setAttribute("text-anchor", index === columns.length - 1 && columns.length > 1 ? "end" : "middle");
+    tick.setAttribute("class", "axis-text");
+    tick.textContent = column.tick;
+    svg.append(tick);
   });
 
   holder.replaceChildren(svg);
 }
 
-function renderLegend(): void {
-  const legend = byId("chart-legend");
+function renderLegend(id: string): void {
+  const legend = byId(id);
   legend.replaceChildren(
     ...SERIES.map((series) => {
       const item = element("span", "legend-item");
@@ -351,15 +409,15 @@ function cappedRect(x: number, y: number, width: number, height: number): SVGEle
   return path;
 }
 
-function showTooltip(day: DailyBucket, clientX: number, clientY: number): void {
+function showTooltip(column: Column, clientX: number, clientY: number): void {
   const tooltip = byId("tooltip");
-  tooltip.replaceChildren(text("div", "tooltip-title", longDate(day.date)));
+  tooltip.replaceChildren(text("div", "tooltip-title", column.title));
 
   for (const series of SERIES) {
     const row = element("div", "tooltip-row");
     const key = element("span", "tooltip-key");
     key.style.background = series.color;
-    row.append(key, text("span", "tooltip-value", String(day[series.key])));
+    row.append(key, text("span", "tooltip-value", String(column[series.key])));
     row.append(text("span", "tooltip-name", series.label));
     tooltip.append(row);
   }
@@ -377,7 +435,7 @@ function hideTooltip(): void {
 }
 
 function renderChartTable(summary: ActivitySummary): void {
-  const rows = summary.daily.filter((day) => dayTotal(day) > 0);
+  const rows = summary.daily.filter((day) => columnTotal(day) > 0);
   byId("chart-table").replaceChildren(
     rows.length === 0
       ? text("p", "empty", "No activity to list.")
@@ -388,7 +446,26 @@ function renderChartTable(summary: ActivitySummary): void {
             numberCell(day.commitsAuthored),
             numberCell(day.pullRequestsMerged),
             numberCell(day.reviewsGiven),
-            numberCell(dayTotal(day)),
+            numberCell(columnTotal(day)),
+          ]),
+        ),
+  );
+}
+
+function renderTrendTable(summary: ActivitySummary): void {
+  const trend = summary.trend ?? [];
+  byId("trend-table").replaceChildren(
+    trend.length === 0
+      ? text("p", "empty", "No months to list.")
+      : table(
+          ["Month", "PRs merged", "Commits", "Reviews", "Active days", "Linear completed"],
+          trend.map((month) => [
+            cell(monthLabel(month, true)),
+            numberCell(month.pullRequestsMerged),
+            numberCell(month.commitsAuthored),
+            numberCell(month.reviewsGiven),
+            cell(`${month.activeDays} / ${month.days}`, "num"),
+            numberCell(month.linearCompleted),
           ]),
         ),
   );
@@ -396,80 +473,172 @@ function renderChartTable(summary: ActivitySummary): void {
 
 /* ------------------------------------------------------------------- tables */
 
-function renderPullRequests(summary: ActivitySummary): void {
-  const prs = summary.landedPullRequests;
-  const count = countNote(prs.length, summary.totals.pullRequestsMerged, "merged");
-  byId("prs-sub").textContent =
-    count.length === 0 ? "" : `${count} Per-PR lines are GitHub totals before excludePaths.`;
+/**
+ * The period's work as the ledger links it: issues first, newest first, each with
+ * the pull requests and commits that name it; then whatever names no issue. Blank
+ * titles stay blank — publication removed them, and nothing here fills them back in.
+ */
+function renderShipped(summary: ActivitySummary): void {
+  const shipped = summary.shipped;
+  const issuesHolder = byId("shipped-issues");
+  const unlinkedHolder = byId("shipped-unlinked");
+  if (shipped === undefined) {
+    byId("shipped-sub").textContent =
+      "This summary was stored before shipped work existed. Publish again with a current collector.";
+    issuesHolder.replaceChildren();
+    unlinkedHolder.replaceChildren();
+    return;
+  }
 
-  byId("prs-table").replaceChildren(
-    prs.length === 0
-      ? text("p", "empty", "No pull requests landed in this window.")
-      : table(
-          ["Merged", "Pull request", "Time to merge", "GitHub diff", "Files"],
-          prs.map((pr) => [
-            cell(shortDate(formatLocalDay(pr.mergedAt, summary.window.timeZone)), "meta"),
-            linkCell(`${pr.repository}#${pr.number}`, pr.title, pr.url),
-            cell(formatHours(pr.mergeHours), "num"),
-            diffCell(pr.additions, pr.deletions),
-            numberCell(pr.changedFiles),
-          ]),
-        ),
+  const zone = summary.window.timeZone;
+  const coverage = summary.linear.coverage;
+  const share = coverage.linkedShare === null ? "—" : `${Math.round(coverage.linkedShare * 100)}%`;
+  const linear =
+    summary.linear.syncStatus === "synced"
+      ? ""
+      : ` Linear unavailable — ${linearStatusLabel(summary.linear.syncStatus)}; issue details may be stale.`;
+  byId("shipped-sub").textContent =
+    `${plural(shipped.issues.length, "issue")} · ${coverage.linkedPullRequests}/${coverage.landedPullRequests} ` +
+    `landed PRs linked (${share}). Every PR landed and commit authored ${describePeriod(summary)} ` +
+    `appears under the issue its title, branch or subject names, or below.${linear}`;
+
+  issuesHolder.replaceChildren(
+    shipped.issues.length === 0
+      ? text("p", "empty", "No work linked to a Linear issue in this range.")
+      : workList(shipped.issues.map((issue) => issueItem(issue, zone))),
+  );
+
+  const unlinked: HTMLElement[] = [];
+  if (shipped.unlinkedPullRequests.length > 0) {
+    unlinked.push(workList(shipped.unlinkedPullRequests.map((pr) => unlinkedPullRequestItem(pr, zone))));
+  }
+  if (shipped.unlinkedCommits.length > 0) {
+    const details = element("details", "work-more");
+    details.append(
+      text("summary", "", `${plural(shipped.unlinkedCommits.length, "other commit")}, not the squash commit of a landed PR`),
+      evidenceList(shipped.unlinkedCommits.map((commit) => commitEvidence(commit, zone))),
+    );
+    unlinked.push(details);
+  }
+  unlinkedHolder.replaceChildren(
+    ...(unlinked.length === 0 ? [text("p", "empty", "Everything in this range names an issue.")] : unlinked),
   );
 }
 
-function renderLinear(summary: ActivitySummary): void {
-  const issues = summary.linear.completedIssues;
-  const coverage = summary.linear.coverage;
-  const share = coverage.linkedShare === null ? "—" : `${Math.round(coverage.linkedShare * 100)}%`;
-  if (summary.linear.syncStatus === "synced") {
-    const completed = countNote(
-      issues.length,
-      summary.linear.completedIssuesTotal,
-      "completed",
-    );
-    byId("linear-sub").textContent =
-      `${completed || "No Linear issues completed in this window."} ` +
-      `${coverage.linkedPullRequests}/${coverage.landedPullRequests} landed PRs linked ` +
-      `(${share}). A PR counts when its title or branch names a synced issue.`;
-  } else {
-    byId("linear-sub").textContent =
-      `Linear unavailable — ${linearStatusLabel(summary.linear.syncStatus)}. ` +
-      "Any rows below are cached; completion and PR coverage are not current.";
-  }
-
-  byId("linear-table").replaceChildren(
-    issues.length === 0
-      ? text(
-          "p",
-          "empty",
-          summary.linear.syncStatus === "synced"
-            ? "No Linear issues completed in this window."
-            : "No cached Linear issues completed in this window.",
-        )
-      : table(
-          ["Completed", "Issue", "Contributed in this window"],
-          issues.map((issue) => {
-            const contributions: string[] = [];
-            for (const pr of issue.pullRequests) {
-              contributions.push(`PR ${pr.repository}#${pr.number} via ${pr.via.join("+")}`);
-            }
-            for (const commit of issue.commits) {
-              contributions.push(`${commit.shortSha} via ${commit.via}`);
-            }
-            return [
-              cell(shortDate(formatLocalDay(issue.completedAt, summary.window.timeZone)), "meta"),
-              linkCell(issue.identifier, issue.title, issue.url),
-              cell(
-                contributions.length === 0
-                  ? "no linked PRs or commits in this window"
-                  : contributions.join(" · "),
-                "meta",
-              ),
-            ];
-          }),
-        ),
+function issueItem(issue: ShippedIssue, zone: string): HTMLElement {
+  const status =
+    issue.state === null
+      ? "no completion on record · open, or completed before this history"
+      : issue.completedInWindow
+        ? `${issue.state} ${shortDate(formatLocalDay(issue.completedAt, zone))}`
+        : `${issue.state} ${shortDate(formatLocalDay(issue.completedAt, zone))}, outside this range`;
+  const evidence = [
+    ...issue.pullRequests.flatMap((pr) => [
+      pullRequestEvidence(pr, zone),
+      ...pr.commits.map((commit) => commitEvidence(commit, zone, true)),
+    ]),
+    ...issue.commits.map((commit) => commitEvidence(commit, zone)),
+  ];
+  return workItem(
+    formatLocalDay(issue.shippedAt, zone),
+    anchor(issue.identifier, issue.url),
+    issue.title,
+    status,
+    evidence.length === 0
+      ? text("p", "work-none", "No pull request or commit in this range names it.")
+      : evidenceList(evidence),
   );
+}
+
+function unlinkedPullRequestItem(pr: ShippedPullRequest, zone: string): HTMLElement {
+  return workItem(
+    formatLocalDay(pr.mergedAt, zone),
+    anchor(`${pr.repository}#${pr.number}`, pr.url),
+    pr.title,
+    `merged after ${formatHours(pr.mergeHours)} · +${pr.additions.toLocaleString()} −${pr.deletions.toLocaleString()}`,
+    pr.commits.length === 0 ? null : evidenceList(pr.commits.map((commit) => commitEvidence(commit, zone, true))),
+  );
+}
+
+function workItem(
+  day: string,
+  label: HTMLElement,
+  title: string,
+  status: string,
+  evidence: HTMLElement | null,
+): HTMLElement {
+  const item = element("li", "work-item");
+  const head = element("div", "work-head");
+  head.append(text("span", "work-date", shortDate(day)), label);
+  if (title.length > 0) head.append(text("span", "work-title", title));
+  head.append(text("span", "work-status", status));
+  item.append(head);
+  if (evidence !== null) item.append(evidence);
+  return item;
+}
+
+function pullRequestEvidence(pr: ShippedPullRequest, zone: string): HTMLElement {
+  return evidenceRow(
+    "PR",
+    anchor(`${pr.repository}#${pr.number}`, pr.url),
+    pr.title,
+    `merged ${shortDate(formatLocalDay(pr.mergedAt, zone))} · +${pr.additions.toLocaleString()} ` +
+      `−${pr.deletions.toLocaleString()}${pr.via.length === 0 ? "" : ` · named in ${pr.via.map(viaLabel).join(" and ")}`}`,
+  );
+}
+
+function commitEvidence(commit: ShippedCommit, zone: string, underPullRequest = false): HTMLElement {
+  return evidenceRow(
+    underPullRequest ? "↳ merged" : "commit",
+    anchor(`${commit.repository} ${commit.shortSha}`, commit.url),
+    commit.subject,
+    `authored ${shortDate(formatLocalDay(commit.authoredAt, zone))} · +${commit.additions.toLocaleString()} ` +
+      `−${commit.deletions.toLocaleString()}${commit.via === null ? "" : ` · ${viaLabel(commit.via)}`}`,
+  );
+}
+
+function evidenceRow(kind: string, label: HTMLElement, title: string, meta: string): HTMLElement {
+  const row = element("li", "evidence");
+  row.append(text("span", "evidence-kind", kind), label);
+  if (title.length > 0) row.append(text("span", "evidence-title", title));
+  row.append(text("span", "evidence-meta", meta));
+  return row;
+}
+
+function workList(items: readonly HTMLElement[]): HTMLElement {
+  const list = element("ol", "work-list");
+  list.append(...items);
+  return list;
+}
+
+function evidenceList(rows: readonly HTMLElement[]): HTMLElement {
+  const list = element("ul", "evidence-list");
+  list.append(...rows);
+  return list;
+}
+
+function anchor(label: string, href: string | null): HTMLElement {
+  if (href === null) return text("span", "mono", label);
+  const link = document.createElement("a");
+  link.textContent = label;
+  link.href = href;
+  link.rel = "noreferrer";
+  link.target = "_blank";
+  link.className = "mono";
+  return link;
+}
+
+function viaLabel(via: ShippedPullRequest["via"][number] | NonNullable<ShippedCommit["via"]>): string {
+  switch (via) {
+    case "pr_title":
+      return "title";
+    case "pr_branch":
+      return "branch";
+    case "commit_subject":
+      return "named in subject";
+    case "pr_merge_commit":
+      return "squash commit of the PR";
+  }
 }
 
 function renderCommits(summary: ActivitySummary): void {  const commits = summary.recentCommits;
@@ -573,23 +742,40 @@ function buildRangeControl(): void {
       button.type = "button";
       button.dataset["value"] = String(days);
       button.textContent = `${days} days`;
-      button.addEventListener("click", () => void load(days));
+      button.addEventListener("click", () => void load({ days }));
       return button;
     }),
   );
-  markSelected("#range-control", String(currentDays));
+  markSelected("#range-control", "days" in selection ? String(selection.days) : "");
 }
 
-function wireViewToggle(): void {
-  for (const button of document.querySelectorAll<HTMLButtonElement>(".view-toggle button")) {
+function wireRangeForm(): void {
+  const from = byId("range-from") as HTMLInputElement;
+  const to = byId("range-to") as HTMLInputElement;
+  const today = new Date().toLocaleDateString("en-CA");
+  from.max = today;
+  to.max = today;
+  byId("range-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (from.value.length === 0 || to.value.length === 0) return;
+    const [start, end] = from.value <= to.value ? [from.value, to.value] : [to.value, from.value];
+    void load({ from: start, to: end });
+  });
+}
+
+/** A card's Chart/Table pair; the chart redraws on show because it measures its holder. */
+function wireViewToggle(toggle: HTMLElement): void {
+  const chart = byId(toggle.dataset["chart"] ?? "");
+  const tableHolder = byId(toggle.dataset["table"] ?? "");
+  for (const button of toggle.querySelectorAll<HTMLButtonElement>("button")) {
     button.addEventListener("click", () => {
-      chartView = button.dataset["view"] === "table" ? "table" : "chart";
-      byId("chart-holder").classList.toggle("is-hidden", chartView === "table");
-      byId("chart-table").classList.toggle("is-hidden", chartView === "chart");
-      for (const sibling of document.querySelectorAll(".view-toggle button")) {
+      const showTable = button.dataset["view"] === "table";
+      chart.classList.toggle("is-hidden", showTable);
+      tableHolder.classList.toggle("is-hidden", !showTable);
+      for (const sibling of toggle.querySelectorAll("button")) {
         sibling.classList.toggle("is-selected", sibling === button);
       }
-      if (chartView === "chart" && currentSummary !== null) drawChart(currentSummary);
+      if (!showTable && currentSummary !== null) drawCharts(currentSummary);
     });
   }
 }
@@ -605,7 +791,7 @@ function wireThemeToggle(): void {
           : "dark";
     if (next === "auto") delete root.dataset["theme"];
     else root.dataset["theme"] = next;
-    if (currentSummary !== null) drawChart(currentSummary);
+    if (currentSummary !== null) drawCharts(currentSummary);
   });
 }
 
@@ -617,15 +803,57 @@ function markSelected(selector: string, value: string): void {
 
 /* ------------------------------------------------------------------- helpers */
 
-function dayTotal(day: DailyBucket): number {
-  return day.commitsAuthored + day.pullRequestsMerged + day.reviewsGiven;
+function columnTotal(column: Pick<Column, SeriesKey>): number {
+  return column.commitsAuthored + column.pullRequestsMerged + column.reviewsGiven;
 }
 
-function describeDay(day: DailyBucket): string {
+function describeColumn(column: Column): string {
   return (
-    `${longDate(day.date)}: ${day.commitsAuthored} commits authored, ` +
-    `${day.pullRequestsMerged} pull requests merged, ${day.reviewsGiven} reviews given.`
+    `${column.title}: ${column.commitsAuthored} commits authored, ` +
+    `${column.pullRequestsMerged} pull requests merged, ${column.reviewsGiven} reviews given.`
   );
+}
+
+/** "in the last 30 days" for a shortcut, "from Sep 1 to Sep 24" for a range. */
+function describePeriod(summary: ActivitySummary): string {
+  return "days" in selection
+    ? `in the last ${summary.window.days} days`
+    : `from ${shortDate(summary.window.startDay)} to ${shortDate(summary.window.endDay)}`;
+}
+
+function monthLabel(month: MonthlyBucket, long: boolean): string {
+  const date = new Date(`${month.startDay}T12:00:00Z`);
+  const name = date.toLocaleDateString(undefined, {
+    month: "short",
+    ...(long ? { year: "numeric" } : {}),
+    timeZone: "UTC",
+  });
+  if (!long) return name;
+  const firstDay = Number(month.startDay.slice(8, 10));
+  const lastDay = Number(month.endDay.slice(8, 10));
+  const monthLength = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+  const from = firstDay > 1 ? `from the ${ordinal(firstDay)}` : "";
+  const to = lastDay < monthLength ? `to the ${ordinal(lastDay)}` : "";
+  return from || to ? `${name} (${[from, to].filter(Boolean).join(" ")})` : name;
+}
+
+function ordinal(day: number): string {
+  const suffix = day % 10 === 1 && day !== 11 ? "st" : day % 10 === 2 && day !== 12 ? "nd" : day % 10 === 3 && day !== 13 ? "rd" : "th";
+  return `${day}${suffix}`;
+}
+
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+async function errorMessage(response: Response): Promise<string> {
+  try {
+    const body = (await response.json()) as { error?: unknown };
+    if (typeof body.error === "string") return body.error;
+  } catch {
+    // Not JSON; the status is all there is.
+  }
+  return `The server answered ${response.status}.`;
 }
 
 /** Axis ceiling on a 1/2/5 ladder, with four steps to it. */
@@ -770,7 +998,7 @@ function table(headers: readonly string[], rows: readonly HTMLTableCellElement[]
   headers.forEach((header, index) => {
     const th = document.createElement("th");
     th.textContent = header;
-    if (index > 0 && /lines|files|commits|reviews|merged|total|time/i.test(header)) {
+    if (index > 0 && /lines|files|commits|reviews|merged|total|time|days|completed/i.test(header)) {
       th.className = "num";
     }
     headRow.append(th);
@@ -788,8 +1016,11 @@ function table(headers: readonly string[], rows: readonly HTMLTableCellElement[]
   return el;
 }
 
-function readDaysFromHash(): number | null {
-  const match = /days=(\d+)/.exec(window.location.hash);
-  const days = match === null ? Number.NaN : Number.parseInt(match[1] ?? "", 10);
-  return Number.isInteger(days) && days > 0 ? days : null;
+function readSelectionFromHash(): Selection | null {
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  const from = params.get("from");
+  const to = params.get("to");
+  if (from !== null && to !== null) return { from, to };
+  const days = Number.parseInt(params.get("days") ?? "", 10);
+  return Number.isInteger(days) && days > 0 ? { days } : null;
 }
