@@ -155,6 +155,10 @@ function render(summary: ActivitySummary): void {
   const to = byId("range-to") as HTMLInputElement;
   from.value = summary.window.startDay;
   to.value = summary.window.endDay;
+  // The hosted route starts a range at published history; say so beside the picker.
+  const note = byId("range-note");
+  note.hidden = !("from" in selection) || summary.window.startDay <= selection.from;
+  note.textContent = note.hidden ? "" : `History starts on ${shortDate(summary.window.startDay)}; showing from there.`;
 
   renderKpis(summary);
   drawCharts(summary);

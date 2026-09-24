@@ -158,6 +158,16 @@ h2 {
   gap: 4px;
 }
 
+.view-toggle {
+  display: flex;
+  flex: none;
+  gap: 4px;
+}
+
+.range-note {
+  color: var(--text-primary);
+}
+
 .range-form {
   display: inline-flex;
   align-items: center;
@@ -556,6 +566,13 @@ a:hover {
 
 .work-more .evidence-list {
   margin-left: 0;
+}
+
+@media (max-width: 600px) {
+  .evidence-list,
+  .work-none {
+    margin-left: 0;
+  }
 }
 
 .empty {
