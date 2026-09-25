@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { after, describe, it } from "node:test";
 import { defaultConfig } from "../src/config/config.ts";
+import { addDaysToDayKey, localDayKey } from "../src/domain/time.ts";
 import { resolveWebRoot, startServer, type RunningServer } from "../src/server/server.ts";
 import type { ActivitySummary } from "../src/metrics/summary.ts";
 import { IDENTITY, commit, seedDatabase, writeAll } from "./helpers/seed.ts";
@@ -39,8 +40,8 @@ describe("the local server", () => {
   });
 
   it("serves a summary for an explicit range, with the trend and the timeline", async () => {
-    const to = new Date().toLocaleDateString("en-CA");
-    const from = new Date(Date.now() - 6 * 86_400_000).toLocaleDateString("en-CA");
+    const to = localDayKey(Date.now());
+    const from = addDaysToDayKey(to, -6);
     const response = await fetch(`http://127.0.0.1:${server.port}/api/summary?from=${from}&to=${to}`);
     assert.equal(response.status, 200);
     const summary = (await response.json()) as ActivitySummary;

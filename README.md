@@ -436,8 +436,10 @@ dashboard repeats these definitions at the bottom of the page.
   names, plus the issues completed in the range. A squash commit sits under its pull
   request. Work that names no issue is listed separately. Only completed issues are
   synced with details, so an issue still in progress shows as its identifier alone.
-- **By month** — calendar months up to the end of the range, at least twelve, each
-  counted with the rules above. Leading months with no recorded activity are omitted.
+- **By month** — the twelve calendar months ending with the range's last month, or
+  every month the range touches when it is longer, each counted with the rules above.
+  Nothing before synced or published history is counted, so there may be fewer months
+  and the first may be partial.
 
 A window of N days is the N local calendar days ending today, today included, so
 "17 / 30 active days" compares like with like. Bucketing uses your local zone, not UTC.

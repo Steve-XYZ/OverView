@@ -79,7 +79,6 @@ async function main(): Promise<void> {
 }
 
 async function load(next: Selection): Promise<void> {
-  selection = next;
   const query = new URLSearchParams(
     "days" in next ? { days: String(next.days) } : { from: next.from, to: next.to },
   ).toString();
@@ -99,6 +98,7 @@ async function load(next: Selection): Promise<void> {
     }
     if (!response.ok) throw new Error(await errorMessage(response));
     currentSummary = (await response.json()) as ActivitySummary;
+    selection = next;
     render(currentSummary);
   } catch (error) {
     byId("warnings").textContent = `Could not load the summary: ${describe(error)}`;
@@ -155,9 +155,12 @@ function render(summary: ActivitySummary): void {
   const to = byId("range-to") as HTMLInputElement;
   from.value = summary.window.startDay;
   to.value = summary.window.endDay;
-  // The hosted route starts a range at published history; say so beside the picker.
+  // The hosted route starts a range or a shortcut at published history; say so beside the picker.
   const note = byId("range-note");
-  note.hidden = !("from" in selection) || summary.window.startDay <= selection.from;
+  note.hidden =
+    "from" in selection
+      ? summary.window.startDay <= selection.from
+      : !(RANGES as readonly number[]).includes(selection.days) || summary.window.days >= selection.days;
   note.textContent = note.hidden ? "" : `History starts on ${shortDate(summary.window.startDay)}; showing from there.`;
 
   renderKpis(summary);

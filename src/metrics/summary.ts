@@ -876,7 +876,8 @@ const DEFINITIONS: Readonly<Record<string, string>> = {
     "range. A pull request naming two issues is listed under both. Work that names no issue " +
     "is listed separately: each landed pull request with its squash commit, then the other commits.",
   monthlyTrend:
-    "Calendar months up to the end of the range, up to twelve or the range's length, counted " +
-    "with the same rules as the totals. Nothing before the start of synced or published " +
-    "history is counted, so the first month may be partial.",
+    "The twelve calendar months ending with the range's last month, or every month the range " +
+    "touches when it is longer, counted with the same rules as the totals. Nothing before the " +
+    "start of synced or published history is counted, so there may be fewer months and the " +
+    "first may be partial.",
 };
