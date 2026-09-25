@@ -62,6 +62,13 @@ export interface StoredLedgerHead {
   /** The most recent publication across the account's collectors. */
   readonly publishedAt: string;
   readonly collector: LedgerFacts["collector"];
+  /**
+   * The latest coverage start across the account's collectors, as an instant: each
+   * collector's day is in its own zone. Every record from here on was restated by
+   * its collector's newest publication, so it carries that publication's redaction
+   * rules; older records may predate them and are not read.
+   */
+  readonly historyFromMs: number;
 }
 
 /**

@@ -15,7 +15,7 @@ import type {
   ReviewFact,
 } from "../domain/facts.ts";
 import { currentTimeZone } from "../domain/time.ts";
-import type { ActivitySummary } from "../metrics/summary.ts";
+import type { ActivitySummary, ShippedPullRequest } from "../metrics/summary.ts";
 import { buildSummary } from "../metrics/summary.ts";
 import { createWindow } from "../metrics/window.ts";
 import type { Db } from "../store/db.ts";
@@ -180,7 +180,10 @@ function buildSnapshots(
   return Object.fromEntries(
     PUBLISHED_WINDOWS.map((days) => {
       const summary = buildSummary(db, createWindow(days, now), config.identity);
-      return [String(days), redactForPublishing(summary, config, redactedIssues)];
+      // Snapshots keep the shape they had before the timeline: the ledger's facts
+      // already carry that detail, and a snapshot-only host never received it.
+      const { shipped: _shipped, ...snapshot } = redactForPublishing(summary, config, redactedIssues);
+      return [String(days), snapshot];
     }),
   ) as unknown as PublishedSnapshots;
 }
@@ -342,34 +345,42 @@ export function redactForPublishing(
     if (lower.startsWith("path:")) return { name: "local-repository", redacted: true };
     return { name, redacted: false };
   };
+  const redactEntry = <T extends { readonly repository: string; readonly title: string; readonly url: string | null }>(
+    entry: T,
+  ): T => {
+    const rule = repository(entry.repository);
+    return { ...entry, repository: rule.name, ...(rule.redacted ? { title: "", url: null } : {}) };
+  };
+  const redactCommit = <T extends { readonly repository: string; readonly subject: string; readonly url: string | null }>(
+    commit: T,
+  ): T => {
+    const rule = repository(commit.repository);
+    return { ...commit, repository: rule.name, ...(rule.redacted ? { subject: "", url: null } : {}) };
+  };
+  const redactShippedPullRequest = (pullRequest: ShippedPullRequest): ShippedPullRequest => ({
+    ...redactEntry(pullRequest),
+    commits: pullRequest.commits.map(redactCommit),
+  });
+  const redactIssue = (issue: {
+    readonly identifier: string;
+    readonly pullRequests: readonly { readonly repository: string; readonly commits?: readonly { readonly repository: string }[] }[];
+    readonly commits: readonly { readonly repository: string }[];
+  }): boolean =>
+    config.publish.redactLinearDetails ||
+    redactedIssues.has(issue.identifier) ||
+    issue.pullRequests.some(
+      (entry) =>
+        repository(entry.repository).redacted ||
+        (entry.commits ?? []).some((commit) => repository(commit.repository).redacted),
+    ) ||
+    issue.commits.some((entry) => repository(entry.repository).redacted);
 
   return {
     ...summary,
     identity: { ...summary.identity, gitEmails: [] },
-    landedPullRequests: summary.landedPullRequests.map((pullRequest) => {
-      const rule = repository(pullRequest.repository);
-      return {
-        ...pullRequest,
-        repository: rule.name,
-        ...(rule.redacted ? { title: "", url: null } : {}),
-      };
-    }),
-    recentCommits: summary.recentCommits.map((commit) => {
-      const rule = repository(commit.repository);
-      return {
-        ...commit,
-        repository: rule.name,
-        ...(rule.redacted ? { subject: "", url: null } : {}),
-      };
-    }),
-    recentReviews: summary.recentReviews.map((review) => {
-      const rule = repository(review.repository);
-      return {
-        ...review,
-        repository: rule.name,
-        ...(rule.redacted ? { title: "", url: null } : {}),
-      };
-    }),
+    landedPullRequests: summary.landedPullRequests.map(redactEntry),
+    recentCommits: summary.recentCommits.map(redactCommit),
+    recentReviews: summary.recentReviews.map(redactEntry),
     repositories: summary.repositories.map((status) => {
       const rule = repository(status.slug ?? status.key);
       return {
@@ -386,35 +397,25 @@ export function redactForPublishing(
     linear: {
       ...summary.linear,
       completedIssues: summary.linear.completedIssues.map((issue) => {
-        const pullRequests = issue.pullRequests.map((pullRequest) => {
-          const rule = repository(pullRequest.repository);
-          return {
-            ...pullRequest,
-            repository: rule.name,
-            ...(rule.redacted ? { title: "", url: null } : {}),
-          };
-        });
-        const commits = issue.commits.map((commit) => {
-          const rule = repository(commit.repository);
-          return {
-            ...commit,
-            repository: rule.name,
-            ...(rule.redacted ? { subject: "", url: null } : {}),
-          };
-        });
-        const redactIssue =
-          config.publish.redactLinearDetails ||
-          redactedIssues.has(issue.identifier) ||
-          issue.pullRequests.some((entry) => repository(entry.repository).redacted) ||
-          issue.commits.some((entry) => repository(entry.repository).redacted);
-        return {
-          ...issue,
-          pullRequests,
-          commits,
-          ...(redactIssue ? { title: "", url: null } : {}),
-        };
+        const pullRequests = issue.pullRequests.map(redactEntry);
+        const commits = issue.commits.map(redactCommit);
+        return { ...issue, pullRequests, commits, ...(redactIssue(issue) ? { title: "", url: null } : {}) };
       }),
     },
+    ...(summary.shipped === undefined
+      ? {}
+      : {
+          shipped: {
+            issues: summary.shipped.issues.map((issue) => ({
+              ...issue,
+              pullRequests: issue.pullRequests.map(redactShippedPullRequest),
+              commits: issue.commits.map(redactCommit),
+              ...(redactIssue(issue) ? { title: "", url: null } : {}),
+            })),
+            unlinkedPullRequests: summary.shipped.unlinkedPullRequests.map(redactShippedPullRequest),
+            unlinkedCommits: summary.shipped.unlinkedCommits.map(redactCommit),
+          },
+        }),
     warnings: summary.warnings.map((warning) => redactLocalPaths(warning, config.repositories)),
   };
 }

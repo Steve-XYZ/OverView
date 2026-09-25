@@ -24,6 +24,12 @@
     <div class="filters" role="group" aria-label="Time range">
       <span class="filters-label">Range</span>
       <div class="segmented" id="range-control"></div>
+      <form class="range-form" id="range-form">
+        <label>From <input type="date" id="range-from" required /></label>
+        <label>to <input type="date" id="range-to" required /></label>
+        <button type="submit">Show</button>
+      </form>
+      <span class="filters-meta range-note" id="range-note" hidden></span>
       <span class="filters-meta" id="sync-line"></span>
     </div>
 
@@ -42,7 +48,7 @@
             <h2 id="chart-title">Activity by day</h2>
             <p class="card-sub" id="chart-sub"></p>
           </div>
-          <div class="view-toggle" role="group" aria-label="Chart view">
+          <div class="view-toggle" role="group" aria-label="Chart view" data-chart="chart-holder" data-table="chart-table">
             <button type="button" data-view="chart" class="is-selected">Chart</button>
             <button type="button" data-view="table">Table</button>
           </div>
@@ -52,20 +58,32 @@
         <div class="table-holder is-hidden" id="chart-table"></div>
       </section>
 
-      <section class="card" aria-labelledby="prs-title">
+      <section class="card chart-card" aria-labelledby="trend-title" id="trend-card">
         <div class="card-head">
-          <h2 id="prs-title">Landed pull requests</h2>
-          <p class="card-sub" id="prs-sub"></p>
+          <div>
+            <h2 id="trend-title">By month</h2>
+            <p class="card-sub" id="trend-sub"></p>
+          </div>
+          <div class="view-toggle" role="group" aria-label="Monthly view" data-chart="trend-holder" data-table="trend-table">
+            <button type="button" data-view="chart" class="is-selected">Chart</button>
+            <button type="button" data-view="table">Table</button>
+          </div>
         </div>
-        <div class="table-holder" id="prs-table"></div>
+        <div class="legend" id="trend-legend"></div>
+        <div class="chart-holder" id="trend-holder"></div>
+        <div class="table-holder is-hidden" id="trend-table"></div>
       </section>
 
-      <section class="card" aria-labelledby="linear-title">
+      <section class="card" aria-labelledby="shipped-title">
         <div class="card-head">
-          <h2 id="linear-title">Completed Linear issues</h2>
-          <p class="card-sub" id="linear-sub"></p>
+          <div>
+            <h2 id="shipped-title">Shipped work</h2>
+            <p class="card-sub" id="shipped-sub"></p>
+          </div>
         </div>
-        <div class="table-holder" id="linear-table"></div>
+        <div id="shipped-issues"></div>
+        <h3 class="work-heading">Not linked to an issue</h3>
+        <div id="shipped-unlinked"></div>
       </section>
 
       <div class="split">

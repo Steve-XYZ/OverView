@@ -431,9 +431,23 @@ dashboard repeats these definitions at the bottom of the page.
   the database, and each link keeps whether it came from the title or the
   branch. Commits link the same way through their subject, or as the squash
   commit of a linked pull request.
+- **Shipped work** — every pull request you landed and every commit you authored in
+  the range, uncapped, grouped under the Linear issue its title, branch or subject
+  names, plus the issues completed in the range. A squash commit sits under its pull
+  request. Work that names no issue is listed separately. Only completed issues are
+  synced with details, so an issue still in progress shows as its identifier alone.
+- **By month** — the twelve calendar months ending with the range's last month, or
+  every month the range touches when it is longer, each counted with the rules above.
+  Nothing before synced or published history is counted, so there may be fewer months
+  and the first may be partial.
 
 A window of N days is the N local calendar days ending today, today included, so
 "17 / 30 active days" compares like with like. Bucketing uses your local zone, not UTC.
+An explicit range, `/api/summary?from=2026-09-01&to=2026-09-24`, is the same window
+type: a range ending today is identical to the shortcut covering those days, an
+earlier range ends at the last moment of its final day, and ranges are capped at 366
+days. The hosted dashboard computes ranges from the fact ledger only; an account that
+has published nothing but snapshots gets 7, 30 and 90 days.
 
 ## Provenance
 
