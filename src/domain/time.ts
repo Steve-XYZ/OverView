@@ -83,7 +83,10 @@ export function startOfLocalDayMs(dayKey: string, timeZone: string = currentTime
   // One refinement pass settles the DST-boundary case where the first guess lands
   // on the other side of a transition.
   const first = asUtc - zoneOffsetMs(asUtc, timeZone);
-  return asUtc - zoneOffsetMs(first, timeZone);
+  const refined = asUtc - zoneOffsetMs(first, timeZone);
+  // Where clocks jump over midnight itself, `refined` is the hour before, still
+  // yesterday; the day starts at the jump, which `first` already is.
+  return localDayKey(refined, timeZone) === dayKey ? refined : first;
 }
 
 /** Shift a `YYYY-MM-DD` key by whole calendar days. Pure calendar arithmetic. */

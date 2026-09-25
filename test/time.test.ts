@@ -40,6 +40,19 @@ describe("startOfLocalDayMs", () => {
     assert.equal(localDayKey(ms, "America/New_York"), "2026-03-08");
     assert.equal(localDayKey(ms - 1, "America/New_York"), "2026-03-07");
   });
+
+  it("starts at the jump where clocks skip midnight itself", () => {
+    for (const [zone, day, start] of [
+      ["America/Havana", "2026-03-08", "2026-03-08T05:00:00.000Z"],
+      ["America/Santiago", "2026-09-06", "2026-09-06T04:00:00.000Z"],
+      ["Asia/Beirut", "2026-03-29", "2026-03-28T22:00:00.000Z"],
+    ] as const) {
+      const ms = startOfLocalDayMs(day, zone);
+      assert.equal(new Date(ms).toISOString(), start, zone);
+      assert.equal(localDayKey(ms, zone), day, zone);
+      assert.equal(localDayKey(ms - 1, zone), addDaysToDayKey(day, -1), zone);
+    }
+  });
 });
 
 describe("day key arithmetic", () => {
