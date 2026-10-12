@@ -23,7 +23,10 @@ import {
   redactForPublishing,
 } from "../src/publish/publish.ts";
 import { collectFacts } from "../src/store/facts.ts";
+import { MS_PER_DAY } from "../src/domain/time.ts";
+import { commit, writeAll } from "./helpers/seed.ts";
 import {
+  HOME_EMAIL,
   LEDGER_CONFIG,
   LEDGER_IDENTITY,
   NOW,
@@ -129,6 +132,13 @@ describe("the fact ledger", () => {
 
   it("strips every redacted detail from the records before they are serialized", () => {
     const seeded = seedLedgerDatabase();
+    writeAll(seeded, {
+      commits: [
+        commit({ sha: "grace01", authoredAt: new Date(NOW - 2 * MS_PER_DAY).toISOString(), email: "Grace@Example.com".toLowerCase(), syncRunId: seeded.syncRunId }),
+        // The identity's address in another case is still the identity's.
+        commit({ sha: "widget06", authoredAt: new Date(NOW - 2 * MS_PER_DAY).toISOString(), email: HOME_EMAIL.toUpperCase(), syncRunId: seeded.syncRunId }),
+      ],
+    });
     const publication = buildLedgerPublication(seeded.db, LEDGER_CONFIG, NOW);
     const wire = JSON.stringify(publication);
 
@@ -155,11 +165,11 @@ describe("the fact ledger", () => {
     assert.equal(secretIssue?.sourceUrl, null);
     assert.equal(secretIssue?.stateName, "Done");
 
-    // A detailed repository keeps its detail, including the addresses it observed.
+    // A detailed repository keeps its detail, including the other people it observed.
     const widgetIssue = publication.facts.linearIssues.find((fact) => fact.identifier === "BOS-42");
     assert.equal(widgetIssue?.title, "Add the widget");
-    const widgetDay = publication.facts.repositoryDays.find((fact) => fact.repositoryKey === WIDGET);
-    assert.deepEqual(widgetDay?.authorEmails, ["ada@example.com"]);
+    const widgetDays = publication.facts.repositoryDays.filter((fact) => fact.repositoryKey === WIDGET);
+    assert.deepEqual([...new Set(widgetDays.flatMap((day) => day.authorEmails))], ["grace@example.com"]);
     const secretDay = publication.facts.repositoryDays.find((fact) => fact.repositoryKey === SECRET);
     assert.deepEqual(secretDay?.authorEmails, []);
     assert.equal((secretDay?.commitsObserved ?? 0) > 0, true);

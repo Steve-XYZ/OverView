@@ -56,7 +56,8 @@ export interface RepositoryDayFact {
   /** Of those, the ones matching the configured identity. Counted per repository,
    * so a commit present in a fork and its upstream counts in both. */
   readonly commitsMatched: number;
-  /** Distinct author addresses seen. Emptied by redaction. */
+  /** Distinct author addresses seen. Emptied by redaction; the identity's own
+   * addresses are never published. */
   readonly authorEmails: readonly string[];
 }
 
