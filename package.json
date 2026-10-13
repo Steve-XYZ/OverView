@@ -17,6 +17,7 @@
     "typecheck": "tsc -p tsconfig.test.json",
     "watch": "tsc -p tsconfig.json --watch",
     "test": "node --test \"test/**/*.test.ts\"",
+    "test:postgres": "node scripts/test-postgres.js",
     "overview": "node src/cli.ts",
     "sync": "node src/cli.ts sync",
     "serve": "node src/cli.ts serve",
