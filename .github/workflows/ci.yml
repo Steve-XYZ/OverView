@@ -37,3 +37,35 @@ jobs:
 
       # The command Vercel runs, so a deploy cannot break in a way CI missed.
       - run: pnpm run build:hosted
+
+  postgres:
+    name: PostgreSQL ledger integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: overview
+          POSTGRES_PASSWORD: overview_test
+          POSTGRES_DB: overview_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U overview -d overview_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      OVERVIEW_TEST_DATABASE_URL: postgresql://overview:overview_test@127.0.0.1:5432/overview_test
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run: pnpm run test:postgres

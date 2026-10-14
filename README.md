@@ -295,7 +295,9 @@ For a redacted repository, the publisher keeps metric totals, repository identif
 PR number, issue identifier, and commit SHA, but clears URLs, commit subjects, PR and
 review titles, ref/head details, and observed author emails. `redactLinearDetails:
 true` clears every Linear title and URL. Local paths and identity Git emails are
-never published, even for detailed repositories. Redaction happens before
+never published, even for detailed repositories: a detailed repository's observed
+author addresses leave out the ones in `identity.gitEmails`, in any letter case, and
+keep everyone else's. Redaction happens before
 serialization, so a cleared field never reaches Neon at all. Local reports and the
 loopback dashboard retain full detail.
 
@@ -562,10 +564,6 @@ App, or Linear OAuth flow.
 - **The snapshot fallback holds one publication per account, not one per collector.**
   With several collectors, `?source=snapshot` shows whichever published last. The
   ledger is the correct view; the snapshot is there for comparison during validation.
-- **The hosted SQL itself is not exercised in CI.** There is no Postgres in the test
-  environment, so the ledger tests run against an in-memory store that mirrors the
-  same keys and lifetime rules. Reads, writes, and metrics are covered; the SQL text
-  is not.
 - **Accounts cannot be deleted from the UI.** Removing one means deleting its
   `overview_user` row, which cascades to its tokens and snapshot.
 
@@ -575,6 +573,7 @@ App, or Linear OAuth flow.
 pnpm typecheck        # tsc over src and test
 pnpm typecheck:hosted # tsc over Vercel functions and middleware
 pnpm test             # node:test, no build required
+pnpm test:postgres    # production SQL against PostgreSQL; requires psql and the URL below
 pnpm check            # all typechecks and tests
 pnpm build            # tsc + copy the page assets into dist/web
 pnpm build:hosted     # build local output and Vercel public assets
@@ -584,3 +583,16 @@ node src/cli.ts sync  # run from source via Node's TypeScript support
 Source runs unbuilt because the code stays inside erasable TypeScript syntax
 (`erasableSyntaxOnly`), which Node can strip without a compiler. The browser still
 needs real JavaScript, so `serve` looks for `dist/` and says so when it is missing.
+
+CI runs the hosted store's actual schema, reads, and publication transactions
+against PostgreSQL 16, in addition to the fast in-memory tests. To run that suite
+locally, install `psql` and set `OVERVIEW_TEST_DATABASE_URL` to a disposable
+PostgreSQL database whose user can create schemas. Each run creates a randomly
+named `overview_test_*` schema and drops it afterwards; it never uses production
+`DATABASE_URL`. The dedicated command fails if its URL is missing, while the
+ordinary test command skips the PostgreSQL suite when no URL is set.
+
+The suite checks local/hosted 7/30/90-day agreement, account isolation, coverage
+deletion, collector ownership, token revocation, and transaction rollback. It
+executes the production SQL through `psql`; Neon HTTP transport and deployment
+configuration still require deployment validation.
