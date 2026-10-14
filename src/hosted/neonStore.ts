@@ -79,7 +79,6 @@ export function neonStore(): HostedStore {
   return productionStore ??= createSqlStore(database);
 }
 
-/** Use the same schema, statements and row conversion with a different SQL transport. */
 export function createSqlStore(connect: () => Sql): HostedStore {
   let schemaReady: Promise<void> | null = null;
 

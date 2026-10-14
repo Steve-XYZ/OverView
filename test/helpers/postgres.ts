@@ -1,7 +1,3 @@
-/** Execute the production store's SQL on PostgreSQL, with no test npm dependencies.
- * psql runs each batch in a single connection. ON_ERROR_STOP closes that connection
- * on failure, rolling back its open transaction. Nothing copies the store's logic.
- */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createSqlStore, type Sql } from "../../src/hosted/neonStore.ts";
@@ -29,7 +25,8 @@ export function postgresStore(url: string, schema: string) {
       ...statements.flatMap((text, index) => [`\\echo ${marker}_${index}`, `${text};`]),
       transaction ? "COMMIT;" : "",
     ].join("\n");
-    // Using stdin rather than -c avoids command-line length limits for publications.
+    // ON_ERROR_STOP closes the connection on failure, rolling back its transaction.
+    // stdin avoids command-line length limits for publications.
     const child = exec("psql", ["-X", "-q", "--csv", "-P", `null=${nullMarker}`, "-v", "ON_ERROR_STOP=1"], {
       env: { ...process.env, ...connectionEnv, PGCONNECT_TIMEOUT: "5" },
       timeout: 30_000,
@@ -64,7 +61,6 @@ export function postgresStore(url: string, schema: string) {
   };
 }
 
-/** libpq does not expand a URI supplied in PGDATABASE; select its fields explicitly. */
 export function postgresEnvironment(url: string): Record<string, string> {
   const connection = new URL(url);
   if (!["postgres:", "postgresql:"].includes(connection.protocol)
@@ -92,7 +88,6 @@ export function literal(value: unknown): string {
   return `E'${value.replaceAll("\\", "\\\\").replaceAll("'", "''")}'`;
 }
 
-/** An explicit psql NULL marker distinguishes missing values from empty text. */
 export function csvRows(csv: string, nullMarker = "\\N"): Row[] {
   const records: (string | null)[][] = [];
   let record: (string | null)[] = [];

@@ -22,6 +22,7 @@ describe("production SQL on PostgreSQL", { skip: url === undefined, timeout: 120
 
   before(async () => {
     await database.create();
+    await store.upsertUser(1, "ada");
     const seeded = seedLedgerDatabase();
     try { publication = buildLedgerPublication(seeded.db, LEDGER_CONFIG, NOW); }
     finally { seeded.db.close(); }
@@ -29,7 +30,6 @@ describe("production SQL on PostgreSQL", { skip: url === undefined, timeout: 120
   after(async () => { await database.drop(); });
   beforeEach(async () => {
     // Cascades exercise the real foreign keys and keep each test independent.
-    ada = await store.upsertUser(1, "ada");
     await database.execute("DELETE FROM overview_user");
     ada = await store.upsertUser(1, "ada");
     grace = await store.upsertUser(2, "grace");
