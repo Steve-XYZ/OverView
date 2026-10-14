@@ -1,11 +1,14 @@
 import { strict as assert } from "node:assert";
 import { after, before, beforeEach, describe, it } from "node:test";
 import type { LedgerFacts } from "../src/domain/facts.ts";
+import { currentTimeZone, localDayKey } from "../src/domain/time.ts";
 import { createSessionCookie } from "../src/hosted/auth.ts";
 import { handleSummary } from "../src/hosted/routes.ts";
 import type { HostedUser } from "../src/hosted/store.ts";
-import type { ActivitySummary } from "../src/metrics/summary.ts";
-import { buildLedgerPublication, type LedgerPublication } from "../src/publish/publish.ts";
+import { summarizeWithTrend, type ActivitySummary } from "../src/metrics/summary.ts";
+import { createWindow, historyRange } from "../src/metrics/window.ts";
+import { buildLedgerPublication, redactFacts, type LedgerPublication } from "../src/publish/publish.ts";
+import { collectFacts } from "../src/store/facts.ts";
 import { LEDGER_CONFIG, NOW, SECRETS, seedLedgerDatabase } from "./helpers/ledgerFixture.ts";
 import { cookieHeader } from "./helpers/hostedStore.ts";
 import { postgresStore } from "./helpers/postgres.ts";
@@ -19,12 +22,22 @@ describe("production SQL on PostgreSQL", { skip: url === undefined, timeout: 120
   let ada: HostedUser;
   let grace: HostedUser;
   let publication: LedgerPublication;
+  const dashboards = new Map<string, ActivitySummary>();
 
   before(async () => {
     await database.create();
     await store.upsertUser(1, "ada");
     const seeded = seedLedgerDatabase();
-    try { publication = buildLedgerPublication(seeded.db, LEDGER_CONFIG, NOW); }
+    try {
+      publication = buildLedgerPublication(seeded.db, LEDGER_CONFIG, NOW);
+      const zone = currentTimeZone();
+      const history = localDayKey(publication.coverage.fromMs, zone);
+      for (const days of [7, 30, 90]) {
+        const window = createWindow(days, NOW, zone);
+        const facts = collectFacts(seeded.db, historyRange(window, NOW, publication.coverage.fromMs), LEDGER_CONFIG.identity, zone);
+        dashboards.set(String(days), summarizeWithTrend(redactFacts(facts, LEDGER_CONFIG), window, history));
+      }
+    }
     finally { seeded.db.close(); }
   });
   after(async () => { await database.drop(); });
@@ -61,9 +74,14 @@ describe("production SQL on PostgreSQL", { skip: url === undefined, timeout: 120
       }), { store, sessionSecret: secret, now: NOW });
       assert.equal(response.status, 200);
       const summary = await response.json() as ActivitySummary;
-      const { generatedAt: _generatedAt, publishedAt: _publishedAt, account: _account, source: _source, ...actual } = summary;
+      const { generatedAt: _generatedAt, publishedAt: _publishedAt, account: _account, source: _source,
+        shipped: _shipped, trend: _trend, ...actual } = summary;
       const { generatedAt: _expectedAt, publishedAt: _expectedPublished, account: _expectedAccount, source: _expectedSource, ...expected } = publication.snapshots[days];
       assert.deepEqual(actual, expected, `${days}-day SQL summary differs`);
+      const dashboard = dashboards.get(days);
+      assert.ok(dashboard);
+      assert.deepEqual(summary.shipped, dashboard.shipped, `${days}-day SQL timeline differs`);
+      assert.deepEqual(summary.trend, dashboard.trend, `${days}-day SQL trend differs`);
       for (const value of SECRETS) assert.equal(JSON.stringify(summary).includes(value), false);
     }
     assert.equal(await store.getLedgerHead(grace.id), null);

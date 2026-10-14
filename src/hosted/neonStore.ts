@@ -264,7 +264,7 @@ export function createSqlStore(connect: () => Sql): HostedStore {
     async getLedgerHead(userId: string): Promise<StoredLedgerHead | null> {
       const sql = await ready();
       const rows = await sql`
-        SELECT collector_id, published_at, collector
+        SELECT collector_id, published_at, collector, coverage_from_ms
         FROM overview_ledger_publication
         WHERE user_id = ${userId}
         ORDER BY published_at DESC, collector_id
@@ -275,6 +275,7 @@ export function createSqlStore(connect: () => Sql): HostedStore {
       return {
         publishedAt: toIso(first["published_at"] as string | Date),
         collector: mergeCollectors(rows.map((row) => row["collector"] as CollectorFacts)),
+        historyFromMs: Math.max(...rows.map((row) => Number(row["coverage_from_ms"]))),
       };
     },
 

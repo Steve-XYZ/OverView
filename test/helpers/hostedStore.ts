@@ -61,6 +61,7 @@ interface CollectorRow {
   readonly publicationId: string;
   readonly publishedAt: string;
   readonly collector: CollectorFacts;
+  readonly coverageFromMs: number;
 }
 
 interface UserLedger {
@@ -186,6 +187,7 @@ export function memoryStore(): MemoryStore {
         publicationId: id,
         publishedAt,
         collector: facts.collector,
+        coverageFromMs: coverage.fromMs,
       });
 
       const scope = { collectorId, publicationId: id };
@@ -256,6 +258,7 @@ export function memoryStore(): MemoryStore {
       return Promise.resolve({
         publishedAt: newest.publishedAt,
         collector: mergeCollectors(rows.map((row) => row.collector)),
+        historyFromMs: Math.max(...rows.map((row) => row.coverageFromMs)),
       });
     },
 

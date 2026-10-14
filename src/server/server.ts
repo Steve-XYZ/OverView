@@ -14,8 +14,9 @@ import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { OverviewConfig } from "../config/config.ts";
 import type { Db } from "../store/db.ts";
-import { buildSummary } from "../metrics/summary.ts";
-import { createWindow, parseWindowDays } from "../metrics/window.ts";
+import { currentTimeZone } from "../domain/time.ts";
+import { buildDashboardSummary } from "../metrics/summary.ts";
+import { createWindow, parseRangeWindow, parseWindowDays, RANGE_ERROR } from "../metrics/window.ts";
 
 const CONTENT_TYPES: Readonly<Record<string, string>> = {
   ".html": "text/html; charset=utf-8",
@@ -117,9 +118,18 @@ async function handle(
   }
 
   if (url.pathname === "/api/summary") {
-    const days = parseWindowDays(url.searchParams.get("days") ?? undefined);
-    const summary = buildSummary(db, createWindow(days), config.identity);
-    sendJson(response, 200, summary);
+    const now = Date.now();
+    const from = url.searchParams.get("from");
+    const to = url.searchParams.get("to");
+    const window =
+      from === null && to === null
+        ? createWindow(parseWindowDays(url.searchParams.get("days") ?? undefined), now)
+        : parseRangeWindow(from, to, now, currentTimeZone());
+    if (window === null) {
+      sendJson(response, 400, { error: RANGE_ERROR });
+      return;
+    }
+    sendJson(response, 200, buildDashboardSummary(db, window, config.identity, now));
     return;
   }
 
