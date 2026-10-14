@@ -100,6 +100,8 @@ it("still displays an error for the current request and clears its loading state
   page.requests[0]!.resolve(Response.json({ error: "current failure" }, { status: 500 }));
   await current;
   assert.equal(page.elements.get("warnings")?.textContent, "Could not load the summary: current failure");
+  assert.equal(page.elements.get("load-error")?.textContent, "Could not load the summary: current failure");
+  assert.equal(page.elements.get("load-error")?.hidden, false);
   assert.equal(page.attributes.get("main:aria-busy"), "false");
 });
 
@@ -126,5 +128,7 @@ it("still shows the first-publication state for the current request", async () =
   await current;
   assert.match(page.elements.get("scope-line")?.textContent ?? "", /Nothing published yet/);
   assert.equal(page.elements.get("account-link")?.hidden, false);
+  assert.equal(page.elements.get("empty-state")?.hidden, false);
+  assert.equal(page.elements.get("main")?.hidden, true);
   assert.equal(page.attributes.get("main:aria-busy"), "false");
 });

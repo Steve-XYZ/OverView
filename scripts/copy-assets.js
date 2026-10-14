@@ -10,6 +10,7 @@ await mkdir(target, { recursive: true });
 for (const file of ["index.html", "styles.css"]) {
   await cp(resolve(root, "src/web", file), resolve(target, file));
 }
+await cp(resolve(root, "src/web/assets"), resolve(target, "assets"), { recursive: true });
 // The icon sits at the site root, because all three pages share one path to it.
 await cp(resolve(root, "src/web/icon.svg"), resolve(root, "dist/icon.svg"));
 console.log(`copied static assets to ${target}`);

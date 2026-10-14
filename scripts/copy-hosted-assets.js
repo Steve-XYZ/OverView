@@ -24,4 +24,6 @@ for (const [source, target] of files) {
   await cp(resolve(root, source), destination);
 }
 
+await cp(resolve(root, "src/web/assets"), resolve(root, "public/web/assets"), { recursive: true });
+
 console.log("copied hosted dashboard assets to public");
