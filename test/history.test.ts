@@ -1,13 +1,4 @@
-/**
- * The historical dashboard: arbitrary ranges, the monthly trend, and the shipped-work
- * timeline, locally and through the hosted route.
- *
- * The properties that matter are completeness (every landed pull request and every
- * authored commit in a range is somewhere in the timeline), agreement (a range and
- * the shortcut naming the same days are one window, and the trend counts what the
- * totals count), and redaction (the hosted timeline shows nothing publication
- * removed).
- */
+
 
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
@@ -39,8 +30,6 @@ function at(daysAgo: number): string {
   return new Date(NOW - daysAgo * MS_PER_DAY).toISOString();
 }
 
-/** The shared fixture, plus the two cases it lacks: an unlinked landed pull request
- * with a squash commit, and a pull request naming an issue that is still open. */
 function seedHistory(): SeededDb {
   const seeded = seedLedgerDatabase();
   const syncRunId = seeded.syncRunId;

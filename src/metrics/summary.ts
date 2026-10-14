@@ -124,24 +124,17 @@ export interface LinearCompletedIssue {
   readonly commits: readonly LinearLinkedCommit[];
 }
 
-/** A landed pull request as evidence for a piece of work. `via` is empty when it names no issue. */
 export interface ShippedPullRequest extends LandedPullRequest {
   readonly via: readonly PullRequestLinkEvidence[];
-  /** Its recorded merge commit, when that commit was authored in the window. */
+  
   readonly commits: readonly ShippedCommit[];
 }
 
-/** An authored commit as evidence for a piece of work. `via` is null when nothing links it. */
 export interface ShippedCommit extends CommitEntry {
   readonly via: CommitLinkEvidence | null;
 }
 
-/**
- * A Linear issue the window's work names, or that was completed in the window.
- *
- * Only completed issues are published, so an issue still in progress arrives as an
- * identifier its links name and nothing more: `state` is null and `title` empty.
- */
+// Open issues have no published fact; links supply only their identifier.
 export interface ShippedIssue {
   readonly identifier: string;
   readonly title: string;
@@ -150,10 +143,10 @@ export interface ShippedIssue {
   readonly state: string | null;
   readonly completedAt: string;
   readonly completedInWindow: boolean;
-  /** The latest of its evidence in the window and its completion in the window. */
+  
   readonly shippedAt: string;
   readonly pullRequests: readonly ShippedPullRequest[];
-  /** Commits naming the issue that are not the merge commit of one of `pullRequests`. */
+  
   readonly commits: readonly ShippedCommit[];
 }
 
@@ -164,11 +157,11 @@ export interface ShippedWork {
 }
 
 export interface MonthlyBucket {
-  /** `YYYY-MM`. */
+  
   readonly month: string;
-  /** The month's first day, or where history starts when that is later. */
+  
   readonly startDay: string;
-  /** The month's last day, or the window's when the window ends inside it. */
+  
   readonly endDay: string;
   readonly days: number;
   readonly commitsAuthored: number;
@@ -231,9 +224,9 @@ export interface ActivitySummary {
       readonly linkedShare: number | null;
     };
   };
-  /** Every piece of work in the window, uncapped. Absent from summaries stored before it existed. */
+  // Absent from summaries published before the timeline was introduced.
   readonly shipped?: ShippedWork;
-  /** Only on a dashboard read, which loads the months before the window as well. */
+  
   readonly trend?: readonly MonthlyBucket[];
   readonly sync: {
     readonly lastRunAt: string | null;
@@ -254,11 +247,7 @@ export function buildSummary(db: Db, window: MetricWindow, identity: Identity): 
   );
 }
 
-/**
- * The loopback dashboard's read, which also needs the months before the window. The
- * trend starts where the last sync's window did: older rows may survive in the file,
- * but no sync has checked them since.
- */
+// Rows before the last sync window may survive locally without being rechecked.
 export function buildDashboardSummary(
   db: Db,
   window: MetricWindow,
@@ -270,10 +259,7 @@ export function buildDashboardSummary(
   return summarizeWithTrend(facts, window, since === null ? null : localDayKey(Date.parse(since), window.timeZone));
 }
 
-/**
- * `summarize`, plus the monthly trend. `facts` must reach back to
- * `historyRange(window, now, historyFromDay)`.
- */
+// facts must cover historyRange(window, now, historyFromDay).
 export function summarizeWithTrend(
   facts: LedgerFacts,
   window: MetricWindow,
@@ -282,11 +268,6 @@ export function summarizeWithTrend(
   return { ...summarize(facts, window), trend: monthlyTrend(facts, window, historyFromDay) };
 }
 
-/**
- * The records each count is taken over. Every figure that counts commits, pull
- * requests or reviews starts here, whether for the window or for one month of the
- * trend, so the two cannot count differently.
- */
 interface WindowActivity {
   readonly authoredCommits: readonly CommitFact[];
   readonly opened: readonly PullRequestFact[];
@@ -335,12 +316,6 @@ function countActiveDays(activity: WindowActivity, zone: string): number {
   return activeDays.size;
 }
 
-/**
- * One bucket per calendar month of `monthlyWindows`, each counted by the same
- * selection as the window's own totals. Without a known start of history, months
- * before the first one with any activity are dropped unless they overlap the
- * window, because a run of zeros there would read as time off.
- */
 function monthlyTrend(facts: LedgerFacts, window: MetricWindow, historyFromDay: string | null): MonthlyBucket[] {
   const buckets = monthlyWindows(window, historyFromDay).map((month): MonthlyBucket => {
     const activity = selectActivity(facts, month);
@@ -540,16 +515,8 @@ interface IssueLink<Via> {
   readonly via: Via;
 }
 
-/**
- * Which issues the window's pull requests and commits name, and the display rows
- * both the Linear section and the shipped-work timeline build from them.
- *
- * Links arrive as facts because they were read from a title, a branch name or a
- * commit subject — the strings publishing removes. One kind is still derived here:
- * a squash commit that is the recorded merge commit of a linked pull request
- * belongs to that pull request's issues, and whether the pull request landed in
- * *this* window is what decides it, so it cannot be settled at publication time.
- */
+// Published links retain evidence removed by redaction.
+// Squash links depend on whether the linked pull request landed in this window.
 interface LinkEvidence {
   readonly landed: (pr: PullRequestFact) => LandedPullRequest;
   readonly commit: (commit: CommitFact) => CommitEntry;
@@ -641,7 +608,6 @@ function linkEvidence(
   };
 }
 
-/** Completed Linear issues in the window, each with the window's PRs and commits that named it. */
 function buildLinearSection(
   facts: LedgerFacts,
   activity: WindowActivity,
@@ -705,17 +671,11 @@ function buildLinearSection(
   };
 }
 
-/**
- * Every landed pull request and authored commit in the window, grouped under the
- * issues they name, plus the issues completed in the window. What names no issue
- * stays visible on its own: a pull request with its squash commit, and the commits
- * left over. A pull request naming two issues is evidence for both.
- */
 function buildShipped(facts: LedgerFacts, activity: WindowActivity, links: LinkEvidence): ShippedWork {
   interface IssueWork {
     readonly prs: ShippedPullRequest[];
     readonly commits: ShippedCommit[];
-    /** Merge commit SHA to the commit list of the issue's pull request it merged. */
+    
     readonly bySquash: Map<string, ShippedCommit[]>;
     latestMs: number;
   }

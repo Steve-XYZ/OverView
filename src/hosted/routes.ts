@@ -118,18 +118,6 @@ export function handleLogout(request: Request): Response {
   });
 }
 
-/**
- * The dashboard read.
- *
- * The ledger answers when the account has published one: the window is built in the
- * collector's zone, the facts for that range and the trend before it are read, and
- * the same `summarize` the local report uses derives the numbers. A window is either
- * `days` (7, 30 or 90) or an explicit `from`/`to` pair of local days, and neither
- * reaches before the start of published coverage. An account that
- * has only ever published snapshots — or a request that explicitly asks for
- * `source=snapshot`, which is how the two paths get compared — reads the stored
- * summary instead, which exists for the three fixed windows only.
- */
 export async function handleSummary(request: Request, deps: SessionDeps): Promise<Response> {
   const user = await currentUser(request, deps);
   if (user === null) return json(401, { error: "Authentication required." });

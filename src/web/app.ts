@@ -42,22 +42,21 @@ const MAX_BAR_WIDTH = 24;
 const SEGMENT_GAP = 2;
 const CAP_RADIUS = 4;
 
-/** One chart column: a day of the daily chart or a month of the trend. */
 interface Column {
   readonly tick: string;
   readonly title: string;
   readonly commitsAuthored: number;
   readonly pullRequestsMerged: number;
   readonly reviewsGiven: number;
-  /** Drawn with a wash behind it: the trend's months that overlap the selected range. */
+  
   readonly highlighted: boolean;
 }
 
-/** A shortcut (`days`) or an explicit pair of local days. */
 type Selection = { readonly days: number } | { readonly from: string; readonly to: string };
 
 let selection: Selection = readSelectionFromHash() ?? { days: 30 };
 let currentSummary: ActivitySummary | null = null;
+let latestRequestId = 0;
 
 void main();
 
@@ -79,6 +78,7 @@ async function main(): Promise<void> {
 }
 
 async function load(next: Selection): Promise<void> {
+  const requestId = ++latestRequestId;
   const query = new URLSearchParams(
     "days" in next ? { days: String(next.days) } : { from: next.from, to: next.to },
   ).toString();
@@ -89,6 +89,7 @@ async function load(next: Selection): Promise<void> {
 
   try {
     const response = await fetch(`/api/summary?${query}`);
+    if (requestId !== latestRequestId) return;
     // A hosted account exists from first sign-in, before its collector has published
     // anything. That empty state is the first thing a new account sees, so it needs
     // the next step named rather than a status code at the foot of the page.
@@ -97,13 +98,17 @@ async function load(next: Selection): Promise<void> {
       return;
     }
     if (!response.ok) throw new Error(await errorMessage(response));
-    currentSummary = (await response.json()) as ActivitySummary;
+    const summary = (await response.json()) as ActivitySummary;
+    if (requestId !== latestRequestId) return;
+    currentSummary = summary;
     selection = next;
     render(currentSummary);
   } catch (error) {
-    byId("warnings").textContent = `Could not load the summary: ${describe(error)}`;
+    if (requestId === latestRequestId) {
+      byId("warnings").textContent = `Could not load the summary: ${describe(error)}`;
+    }
   } finally {
-    main.setAttribute("aria-busy", "false");
+    if (requestId === latestRequestId) main.setAttribute("aria-busy", "false");
   }
 }
 
@@ -480,11 +485,6 @@ function renderTrendTable(summary: ActivitySummary): void {
 
 /* ------------------------------------------------------------------- tables */
 
-/**
- * The period's work as the ledger links it: issues first, newest first, each with
- * the pull requests and commits that name it; then whatever names no issue. Blank
- * titles stay blank — publication removed them, and nothing here fills them back in.
- */
 function renderShipped(summary: ActivitySummary): void {
   const shipped = summary.shipped;
   const issuesHolder = byId("shipped-issues");
@@ -770,7 +770,6 @@ function wireRangeForm(): void {
   });
 }
 
-/** A card's Chart/Table pair; the chart redraws on show because it measures its holder. */
 function wireViewToggle(toggle: HTMLElement): void {
   const chart = byId(toggle.dataset["chart"] ?? "");
   const tableHolder = byId(toggle.dataset["table"] ?? "");
@@ -821,7 +820,6 @@ function describeColumn(column: Column): string {
   );
 }
 
-/** "in the last 30 days" for a shortcut, "from Sep 1 to Sep 24" for a range. */
 function describePeriod(summary: ActivitySummary): string {
   return "days" in selection
     ? `in the last ${summary.window.days} days`

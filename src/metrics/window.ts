@@ -47,14 +47,6 @@ export function createWindow(
   return createRangeWindow(addDaysToDayKey(endDayKey, -(days - 1)), endDayKey, nowMs, timeZone);
 }
 
-/**
- * The local calendar days `startDayKey` to `endDayKey`, both included.
- *
- * A range ending today ends at now, exactly as `createWindow` does, so "last 30
- * days" and the same 30 days picked by date are one window. A range ending earlier
- * ends at the last millisecond of its final day. Days after today do not exist yet
- * and are cut off rather than reported as empty.
- */
 export function createRangeWindow(
   startDayKey: string,
   endDayKey: string,
@@ -87,10 +79,6 @@ export function createRangeWindow(
   };
 }
 
-/**
- * The window a `from`/`to` query names, or null when either day is malformed, the
- * range runs backwards or starts after today, or it is longer than `MAX_RANGE_DAYS`.
- */
 export function parseRangeWindow(
   from: string | null,
   to: string | null,
@@ -105,7 +93,6 @@ export function parseRangeWindow(
   return createRangeWindow(from, to, nowMs, timeZone);
 }
 
-/** A full leap year, so any calendar year can be asked for in one range. */
 export const MAX_RANGE_DAYS = 366;
 
 export const RANGE_ERROR =
@@ -120,16 +107,8 @@ function isDayKey(value: string): boolean {
   );
 }
 
-/** How many calendar months of context the monthly trend shows, ending with the range's last month. */
 export const TREND_MONTHS = 12;
 
-/**
- * One window per calendar month from the trend's first month to the month `window`
- * ends in, which is cut off where `window` is. Earlier months are whole: they are
- * context for the range, not part of it. With a known `historyFromDay`, nothing
- * before it is counted: months that end earlier are left out and the month it falls
- * in starts there.
- */
 export function monthlyWindows(window: MetricWindow, historyFromDay: string | null): MetricWindow[] {
   const lastMonth = monthStart(window.endDayKey);
   const windows: MetricWindow[] = [];
@@ -145,12 +124,6 @@ export function monthlyWindows(window: MetricWindow, historyFromDay: string | nu
   return windows;
 }
 
-/**
- * Everything a dashboard read needs for `window`: the whole trend, and on to now so
- * a linked issue completed after the range still has its record. Nothing before
- * `historyFromMs`, when it is known; a day it falls inside is not whole, so the
- * per-day records start the day after.
- */
 export function historyRange(
   window: MetricWindow,
   nowMs: number,
@@ -180,7 +153,6 @@ function monthStart(dayKey: string): string {
   return `${dayKey.slice(0, 7)}-01`;
 }
 
-/** Shift a first-of-month day key by whole months. */
 function addMonths(firstOfMonth: string, months: number): string {
   const index = Number(firstOfMonth.slice(0, 4)) * 12 + Number(firstOfMonth.slice(5, 7)) - 1 + months;
   const year = Math.floor(index / 12);
