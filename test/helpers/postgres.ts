@@ -117,7 +117,7 @@ export function csvRows(csv: string): Row[] {
     if (column === null) throw new Error("Missing column name.");
     const value = values[index] ?? null;
     return [column, value === null ? null
-      : JSON_COLUMNS.has(column) ? JSON.parse(value) as unknown
+      : JSON_COLUMNS.has(column) && !(column === "via" && columns.includes("sha")) ? JSON.parse(value) as unknown
       : column === "authored_by_viewer" ? value === "t"
       : value];
   })));

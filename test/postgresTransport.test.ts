@@ -38,3 +38,10 @@ it("decodes JSON and booleans while retaining PostgreSQL bigint text", () => {
     { collector: { timeZone: "UTC" }, author_emails: ["someone@example.com"], authored_by_viewer: true, authored_at_ms: "1788436800000" },
   ]);
 });
+
+it("keeps commit-link evidence as text and PR-link evidence as JSON", () => {
+  assert.deepEqual(csvRows("sha,via\nabc,commit_subject\n"), [{ sha: "abc", via: "commit_subject" }]);
+  assert.deepEqual(csvRows('pull_request_number,via\n1,"[""pr_title"",""pr_branch""]"\n'), [
+    { pull_request_number: "1", via: ["pr_title", "pr_branch"] },
+  ]);
+});
