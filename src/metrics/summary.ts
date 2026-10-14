@@ -126,7 +126,7 @@ export interface LinearCompletedIssue {
 
 export interface ShippedPullRequest extends LandedPullRequest {
   readonly via: readonly PullRequestLinkEvidence[];
-  
+
   readonly commits: readonly ShippedCommit[];
 }
 
@@ -143,10 +143,10 @@ export interface ShippedIssue {
   readonly state: string | null;
   readonly completedAt: string;
   readonly completedInWindow: boolean;
-  
+
   readonly shippedAt: string;
   readonly pullRequests: readonly ShippedPullRequest[];
-  
+
   readonly commits: readonly ShippedCommit[];
 }
 
@@ -157,11 +157,11 @@ export interface ShippedWork {
 }
 
 export interface MonthlyBucket {
-  
+
   readonly month: string;
-  
+
   readonly startDay: string;
-  
+
   readonly endDay: string;
   readonly days: number;
   readonly commitsAuthored: number;
@@ -226,7 +226,7 @@ export interface ActivitySummary {
   };
   // Absent from summaries published before the timeline was introduced.
   readonly shipped?: ShippedWork;
-  
+
   readonly trend?: readonly MonthlyBucket[];
   readonly sync: {
     readonly lastRunAt: string | null;
@@ -675,7 +675,7 @@ function buildShipped(facts: LedgerFacts, activity: WindowActivity, links: LinkE
   interface IssueWork {
     readonly prs: ShippedPullRequest[];
     readonly commits: ShippedCommit[];
-    
+
     readonly bySquash: Map<string, ShippedCommit[]>;
     latestMs: number;
   }

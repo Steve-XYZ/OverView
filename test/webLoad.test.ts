@@ -102,3 +102,29 @@ it("still displays an error for the current request and clears its loading state
   assert.equal(page.elements.get("warnings")?.textContent, "Could not load the summary: current failure");
   assert.equal(page.attributes.get("main:aria-busy"), "false");
 });
+
+it("ignores an old error whose body finishes after a newer successful response", async () => {
+  const page = dashboard();
+  const body = Promise.withResolvers<unknown>();
+  const started = Promise.withResolvers<void>();
+  const old = page.load({ days: 7 });
+  page.requests[0]!.resolve({ ok: false, status: 500, json: () => { started.resolve(); return body.promise; } } as Response);
+  await started.promise;
+  const current = page.load({ days: 90 });
+  page.requests[1]!.resolve(Response.json({ marker: "current" }));
+  await current;
+  body.resolve({ error: "old failure" });
+  await old;
+  assert.deepEqual(page.rendered, [{ marker: "current" }]);
+  assert.equal(page.elements.get("warnings")?.textContent ?? "", "");
+});
+
+it("still shows the first-publication state for the current request", async () => {
+  const page = dashboard();
+  const current = page.load({ days: 30 });
+  page.requests[0]!.resolve(Response.json({}, { status: 404 }));
+  await current;
+  assert.match(page.elements.get("scope-line")?.textContent ?? "", /Nothing published yet/);
+  assert.equal(page.elements.get("account-link")?.hidden, false);
+  assert.equal(page.attributes.get("main:aria-busy"), "false");
+});

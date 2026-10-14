@@ -48,7 +48,7 @@ interface Column {
   readonly commitsAuthored: number;
   readonly pullRequestsMerged: number;
   readonly reviewsGiven: number;
-  
+
   readonly highlighted: boolean;
 }
 
