@@ -20,6 +20,7 @@ export function postgresStore(url: string, schema: string) {
   if (!/^overview_test_[a-f0-9]+$/.test(schema)) throw new Error("Invalid test schema.");
 
   async function run(statements: readonly string[], transaction = false): Promise<Row[][]> {
+    const connectionEnv = postgresEnvironment(url);
     const marker = `result_${crypto.randomUUID()}`;
     const script = [
       `SET search_path TO ${schema};`,
@@ -29,7 +30,7 @@ export function postgresStore(url: string, schema: string) {
     ].join("\n");
     // Using stdin rather than -c avoids command-line length limits for publications.
     const child = exec("psql", ["-X", "-q", "--csv", "-v", "ON_ERROR_STOP=1"], {
-      env: { ...process.env, PGDATABASE: url, PGCONNECT_TIMEOUT: "5" },
+      env: { ...process.env, ...connectionEnv, PGCONNECT_TIMEOUT: "5" },
       timeout: 30_000,
       maxBuffer: 8 * 1024 * 1024,
     });
@@ -59,6 +60,23 @@ export function postgresStore(url: string, schema: string) {
     create: () => run([`CREATE SCHEMA ${schema}`]),
     drop: () => run([`DROP SCHEMA ${schema} CASCADE`]),
     execute: (statement: string) => run([statement]),
+  };
+}
+
+/** libpq does not expand a URI supplied in PGDATABASE; select its fields explicitly. */
+export function postgresEnvironment(url: string): Record<string, string> {
+  const connection = new URL(url);
+  if (!["postgres:", "postgresql:"].includes(connection.protocol)
+    || connection.hostname.length === 0 || connection.pathname.length <= 1) {
+    throw new Error("Use a PostgreSQL URL naming a host and a disposable database.");
+  }
+  return {
+    PGHOST: connection.hostname,
+    PGPORT: connection.port || "5432",
+    PGDATABASE: decodeURIComponent(connection.pathname.slice(1)),
+    PGUSER: decodeURIComponent(connection.username),
+    PGPASSWORD: decodeURIComponent(connection.password),
+    PGSSLMODE: connection.searchParams.get("sslmode") ?? "prefer",
   };
 }
 

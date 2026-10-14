@@ -1,6 +1,16 @@
 import { strict as assert } from "node:assert";
 import { it } from "node:test";
-import { csvRows, literal } from "./helpers/postgres.ts";
+import { csvRows, literal, postgresEnvironment } from "./helpers/postgres.ts";
+
+it("selects the URL's host and database without putting credentials in argv", () => {
+  assert.deepEqual(postgresEnvironment("postgresql://ada:p%40ss@127.0.0.1:5433/overview_test?sslmode=require"), {
+    PGHOST: "127.0.0.1", PGPORT: "5433", PGDATABASE: "overview_test",
+    PGUSER: "ada", PGPASSWORD: "p@ss", PGSSLMODE: "require",
+  });
+  assert.equal(postgresEnvironment("postgres://ada@localhost/overview_test")["PGPORT"], "5432");
+  assert.throws(() => postgresEnvironment("https://localhost/overview_test"));
+  assert.throws(() => postgresEnvironment("postgresql://localhost/"));
+});
 
 it("preserves SQL strings containing quotes, backslashes and newlines", () => {
   assert.equal(literal("it's \\a\nline"), "E'it''s \\\\a\nline'");
