@@ -1,28 +1,20 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Overview — sign in</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
-    <style>
-      :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
-      body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: #111827; color: #f9fafb; }
-      main { width: min(24rem, calc(100vw - 3rem)); padding: 2rem; border: 1px solid #374151; border-radius: 1rem; background: #1f2937; }
-      h1 { margin: 0 0 .4rem; font-size: 1.5rem; }
-      p { margin: 0 0 1.5rem; color: #cbd5e1; line-height: 1.5; }
-      .sign-in { display: flex; align-items: center; justify-content: center; gap: .6rem; box-sizing: border-box; width: 100%; min-height: 2.8rem; border-radius: .55rem; border: 0; background: #38bdf8; color: #082f49; font: inherit; font-weight: 700; text-decoration: none; }
-      .note { margin: 1.25rem 0 0; font-size: .85rem; color: #94a3b8; }
-      .error { margin: 0 0 1.25rem; padding: .7rem .85rem; border: 1px solid #7f1d1d; border-radius: .55rem; background: #450a0a; color: #fecaca; font-size: .9rem; }
-      [hidden] { display: none; }
-    </style>
+    <link rel="stylesheet" href="/web/styles.css" />
   </head>
-  <body>
-    <main>
-      <h1>Overview</h1>
-      <p id="error" class="error" hidden></p>
+  <body class="viz-root auth-layout">
+    <main class="card auth-card">
+      <a class="brand" href="/"><img src="/icon.svg" alt="" width="40" height="40" />overview<span class="brand-dot">.</span></a>
+      <p class="eyebrow">Your work, in view</p>
+      <h1>Welcome back.</h1>
+      <p id="error" class="error" role="alert" hidden></p>
       <p>Sign in to see the dashboard your local collector publishes. Each account sees only its own data.</p>
-      <a class="sign-in" href="/api/auth/github/start">Continue with GitHub</a>
+      <a class="sign-in" href="/api/auth/github/start"><span class="icon icon-github" aria-hidden="true"></span>Continue with GitHub<span class="icon icon-arrow-up-right" aria-hidden="true"></span></a>
       <p class="note">
         GitHub is used only to identify you. Overview asks for no repository access, and
         never receives your source code, Git credentials or Linear key.

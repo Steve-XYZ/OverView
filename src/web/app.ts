@@ -5,10 +5,6 @@
  * project is the `ActivitySummary` shape, imported as a type and erased at build
  * time — swapping this page for a hosted UI means keeping that JSON, nothing more.
  *
- * Chart decisions worth knowing: three categorical hues (validated slots 1-3), a 2px
- * surface gap between stacked segments, a 4px rounded cap on the top segment only,
- * one tooltip per column listing every series, and a table view — required relief,
- * because light-mode aqua sits below 3:1 against the surface.
  */
 
 import type {
@@ -36,7 +32,7 @@ const SERIES: readonly Series[] = [
 
 const RANGES = [7, 30, 90] as const;
 const SVG_NS = "http://www.w3.org/2000/svg";
-const CHART_HEIGHT = 250;
+const CHART_HEIGHT = 200;
 const MARGIN = { top: 14, right: 8, bottom: 26, left: 40 };
 const MAX_BAR_WIDTH = 24;
 const SEGMENT_GAP = 2;
@@ -65,6 +61,7 @@ async function main(): Promise<void> {
   wireRangeForm();
   for (const toggle of document.querySelectorAll<HTMLElement>(".view-toggle")) wireViewToggle(toggle);
   wireThemeToggle();
+  wireSectionNavigation();
 
   let resizeTimer = 0;
   window.addEventListener("resize", () => {
@@ -85,6 +82,7 @@ async function load(next: Selection): Promise<void> {
   window.location.hash = query;
   const main = byId("main");
   main.setAttribute("aria-busy", "true");
+  byId("load-error").hidden = true;
   markSelected("#range-control", "days" in next ? String(next.days) : "");
 
   try {
@@ -105,7 +103,10 @@ async function load(next: Selection): Promise<void> {
     render(currentSummary);
   } catch (error) {
     if (requestId === latestRequestId) {
-      byId("warnings").textContent = `Could not load the summary: ${describe(error)}`;
+      const message = `Could not load the summary: ${describe(error)}`;
+      byId("warnings").textContent = message;
+      byId("load-error").textContent = message;
+      byId("load-error").hidden = false;
     }
   } finally {
     if (requestId === latestRequestId) main.setAttribute("aria-busy", "false");
@@ -118,15 +119,21 @@ async function load(next: Selection): Promise<void> {
  * first collector token.
  */
 function showAwaitingFirstPublication(): void {
+  currentSummary = null;
+  byId("main").hidden = true;
+  byId("filters").hidden = true;
+  byId("empty-state").hidden = false;
   byId("scope-line").textContent =
-    "Nothing published yet. Create a collector token on the Account page, then run " +
-    "`overview sync` and `overview publish` on the machine you work from.";
+    "Nothing published yet. Let's get your activity into view.";
   byId("sync-line").textContent = "";
   byId("account-link").hidden = false;
   byId("warnings").textContent = "";
 }
 
 function render(summary: ActivitySummary): void {
+  byId("main").hidden = false;
+  byId("filters").hidden = false;
+  byId("empty-state").hidden = true;
   const t = summary.totals;
 
   // Only the hosted read API names an account, so the local dashboard stays link-free.
@@ -135,10 +142,8 @@ function render(summary: ActivitySummary): void {
   if (summary.account !== undefined) accountLink.textContent = summary.account.githubLogin;
 
   byId("scope-line").textContent =
-    `${summary.window.startDay} to ${summary.window.endDay} · ${summary.window.timeZone} · ` +
-    `GitHub: ${summary.identity.githubLogin ?? "not configured"} · Git emails: ` +
-    `${summary.identity.gitEmails.join(", ") || (summary.publishedAt === undefined ? "none configured" : "hidden")} · ` +
-    `${summary.repositories.length} ${summary.repositories.length === 1 ? "repository" : "repositories"}`;
+    `${shortDate(summary.window.startDay)}${summary.window.startDay.slice(0, 4) === summary.window.endDay.slice(0, 4) ? "" : `, ${summary.window.startDay.slice(0, 4)}`} — ${shortDate(summary.window.endDay)}, ` +
+    `${summary.window.endDay.slice(0, 4)} · ${summary.window.timeZone}`;
 
   byId("sync-line").textContent =
     summary.publishedAt !== undefined
@@ -169,6 +174,7 @@ function render(summary: ActivitySummary): void {
   note.textContent = note.hidden ? "" : `History starts on ${shortDate(summary.window.startDay)}; showing from there.`;
 
   renderKpis(summary);
+  renderWorkspace(summary);
   drawCharts(summary);
   renderChartTable(summary);
   renderTrendTable(summary);
@@ -178,7 +184,26 @@ function render(summary: ActivitySummary): void {
   renderRepositories(summary);
   renderDefinitions(summary);
 
-  byId("warnings").textContent = summary.warnings.map((line) => `⚠ ${line}`).join("\n");
+  byId("warnings").textContent = summary.warnings.join("\n");
+}
+
+function renderWorkspace(summary: ActivitySummary): void {
+  byId("workspace-login").textContent = summary.account?.githubLogin ?? summary.identity.githubLogin ?? "Your workspace";
+  byId("workspace-repositories").textContent = formatCount(summary.repositories.length);
+  byId("workspace-emails").textContent = summary.publishedAt === undefined
+    ? `Commit identity: ${summary.identity.gitEmails.join(", ") || "no Git emails configured"}`
+    : "Your collector keeps Git identity emails private.";
+  byId("source-git").textContent = "Commits authored";
+  byId("source-git-count").textContent = formatCount(summary.totals.commitsAuthored);
+  byId("source-github").textContent = summary.identity.githubLogin === null
+    ? "GitHub not configured"
+    : `${formatCount(summary.totals.reviewsGiven)} reviews · PRs landed`;
+  byId("source-github-count").textContent = formatCount(summary.totals.pullRequestsMerged);
+  byId("source-linear").textContent = summary.linear.syncStatus === "synced"
+    ? "Issues completed"
+    : `Unavailable · ${linearStatusLabel(summary.linear.syncStatus)}`;
+  byId("source-linear-count").textContent = summary.linear.syncStatus === "synced"
+    ? formatCount(summary.linear.completedIssuesTotal) : "—";
 }
 
 /* ---------------------------------------------------------------- stat tiles */
@@ -193,14 +218,14 @@ function renderKpis(summary: ActivitySummary): void {
       note: "by author date, non-merge, on the default branch",
     },
     {
-      label: "Active days",
-      value: `${t.activeDays} / ${summary.window.days}`,
-      note: "days with a commit, PR or review",
-    },
-    {
       label: "Reviews given",
       value: formatCount(t.reviewsGiven),
       note: `${formatCount(t.pullRequestsReviewed)} pull requests`,
+    },
+    {
+      label: "Active days",
+      value: `${t.activeDays} / ${summary.window.days}`,
+      note: "days with a commit, PR or review",
     },
     {
       label: "Median time to merge",
@@ -221,26 +246,24 @@ function renderKpis(summary: ActivitySummary): void {
     },
   ];
 
-  const row = byId("kpi-row");
-  row.replaceChildren(
-    ...tiles.map((tile) => {
-      const el = element("div", "stat-tile");
-      el.append(
-        text("p", "stat-label", tile.label),
-        text("p", "stat-value", tile.value),
-        text("p", "stat-note", tile.note),
-      );
-      return el;
-    }),
-  );
+  const elements = tiles.map((tile) => {
+    const el = element("div", "stat-tile");
+    el.append(
+      text("p", "stat-label", tile.label),
+      text("p", "stat-value", tile.value),
+      text("p", "stat-note", tile.note),
+    );
+    return el;
+  });
+  byId("kpi-row").replaceChildren(...elements.slice(0, 2));
+  byId("supporting-kpis").replaceChildren(...elements.slice(2));
 }
 
 /* -------------------------------------------------------------------- chart */
 
 function drawCharts(summary: ActivitySummary): void {
   byId("chart-sub").textContent =
-    `Commits, merges and reviews per local calendar day, ${summary.window.startDay} to ` +
-    `${summary.window.endDay}.`;
+    `Your daily rhythm · ${shortDate(summary.window.startDay)} to ${shortDate(summary.window.endDay)}`;
   drawChart(
     byId("chart-holder"),
     summary.daily.map((day) => ({ ...day, tick: shortDate(day.date), title: longDate(day.date), highlighted: false })),
@@ -253,9 +276,8 @@ function drawCharts(summary: ActivitySummary): void {
   byId("trend-card").hidden = trend === undefined;
   if (trend === undefined) return;
   byId("trend-sub").textContent =
-    `Calendar months from ${trend[0]?.startDay ?? summary.window.startDay} to ${summary.window.endDay}, ` +
-    "counted exactly as the totals above. " +
-    "Shaded months overlap the selected range; the table adds active days and Linear completions.";
+    `Monthly activity · ${shortDate(trend[0]?.startDay ?? summary.window.startDay)} to ${shortDate(summary.window.endDay)}. ` +
+    "Shaded months overlap this range.";
   drawChart(
     byId("trend-holder"),
     trend.map((month) => ({
@@ -767,6 +789,9 @@ function wireRangeForm(): void {
     if (from.value.length === 0 || to.value.length === 0) return;
     const [start, end] = from.value <= to.value ? [from.value, to.value] : [to.value, from.value];
     void load({ from: start, to: end });
+    const picker = byId("range-form").closest("details");
+    picker?.removeAttribute("open");
+    picker?.querySelector<HTMLElement>("summary")?.focus();
   });
 }
 
@@ -780,6 +805,7 @@ function wireViewToggle(toggle: HTMLElement): void {
       tableHolder.classList.toggle("is-hidden", !showTable);
       for (const sibling of toggle.querySelectorAll("button")) {
         sibling.classList.toggle("is-selected", sibling === button);
+        sibling.setAttribute("aria-pressed", String(sibling === button));
       }
       if (!showTable && currentSummary !== null) drawCharts(currentSummary);
     });
@@ -797,13 +823,33 @@ function wireThemeToggle(): void {
           : "dark";
     if (next === "auto") delete root.dataset["theme"];
     else root.dataset["theme"] = next;
+    byId("theme-toggle").setAttribute("aria-label", `Switch colour theme, currently ${next}`);
     if (currentSummary !== null) drawCharts(currentSummary);
   });
 }
 
+function wireSectionNavigation(): void {
+  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-section]")) {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      const target = byId(button.dataset["section"] ?? "overview");
+      target.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
+      target.setAttribute("tabindex", "-1");
+      target.focus({ preventScroll: true });
+      for (const nav of document.querySelectorAll<HTMLButtonElement>(".main-nav button")) {
+        const selected = nav.dataset["section"] === (button.dataset["section"] === "main" ? "overview" : button.dataset["section"]);
+        nav.classList.toggle("is-selected", selected);
+        nav.setAttribute("aria-pressed", String(selected));
+      }
+    });
+  }
+}
+
 function markSelected(selector: string, value: string): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>(`${selector} button`)) {
-    button.classList.toggle("is-selected", button.dataset["value"] === value);
+    const selected = button.dataset["value"] === value;
+    button.classList.toggle("is-selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
   }
 }
 
