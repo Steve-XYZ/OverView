@@ -23,13 +23,14 @@ it("preserves SQL strings containing quotes, backslashes and newlines", () => {
 
 it("decodes psql CSV without losing empty strings, NULLs or embedded delimiters", () => {
   const csv = `title,source_url,subject
-"",,"it's, \\quoted ""text""
+"",\\N,"it's, \\quoted ""text""
 and a line"
 `;
   assert.deepEqual(csvRows(csv), [
     { title: "", source_url: null, subject: "it's, \\quoted \"text\"\nand a line" },
   ]);
   assert.deepEqual(csvRows(""), []);
+  assert.deepEqual(csvRows("title,source_url\n,null_test\n", "null_test"), [{ title: "", source_url: null }]);
   assert.throws(() => csvRows('title\n"unterminated'));
 });
 

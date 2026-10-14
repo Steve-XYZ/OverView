@@ -22,6 +22,7 @@ export function postgresStore(url: string, schema: string) {
   async function run(statements: readonly string[], transaction = false): Promise<Row[][]> {
     const connectionEnv = postgresEnvironment(url);
     const marker = `result_${crypto.randomUUID()}`;
+    const nullMarker = `null_${crypto.randomUUID()}`;
     const script = [
       `SET search_path TO ${schema};`,
       transaction ? "BEGIN;" : "",
@@ -29,7 +30,7 @@ export function postgresStore(url: string, schema: string) {
       transaction ? "COMMIT;" : "",
     ].join("\n");
     // Using stdin rather than -c avoids command-line length limits for publications.
-    const child = exec("psql", ["-X", "-q", "--csv", "-v", "ON_ERROR_STOP=1"], {
+    const child = exec("psql", ["-X", "-q", "--csv", "-P", `null=${nullMarker}`, "-v", "ON_ERROR_STOP=1"], {
       env: { ...process.env, ...connectionEnv, PGCONNECT_TIMEOUT: "5" },
       timeout: 30_000,
       maxBuffer: 8 * 1024 * 1024,
@@ -40,7 +41,7 @@ export function postgresStore(url: string, schema: string) {
       const start = stdout.indexOf(`${marker}_${index}\n`);
       const end = stdout.indexOf(`${marker}_${index + 1}\n`);
       if (start < 0) throw new Error("Missing PostgreSQL result marker.");
-      return csvRows(stdout.slice(start + marker.length + String(index).length + 2, end < 0 ? undefined : end));
+      return csvRows(stdout.slice(start + marker.length + String(index).length + 2, end < 0 ? undefined : end), nullMarker);
     });
   }
 
@@ -91,8 +92,8 @@ export function literal(value: unknown): string {
   return `E'${value.replaceAll("\\", "\\\\").replaceAll("'", "''")}'`;
 }
 
-/** psql CSV preserves embedded commas/newlines and distinguishes NULL from "". */
-export function csvRows(csv: string): Row[] {
+/** An explicit psql NULL marker distinguishes missing values from empty text. */
+export function csvRows(csv: string, nullMarker = "\\N"): Row[] {
   const records: (string | null)[][] = [];
   let record: (string | null)[] = [];
   let field = "";
@@ -104,7 +105,7 @@ export function csvRows(csv: string): Row[] {
       if (quoted && csv[index + 1] === '"') { field += '"'; index++; }
       else { quoted = !quoted; wasQuoted = true; }
     } else if (!quoted && (char === "," || char === "\n")) {
-      record.push(field === "" && !wasQuoted ? null : field);
+      record.push(field === nullMarker && !wasQuoted ? null : field);
       field = "";
       wasQuoted = false;
       if (char === "\n") { records.push(record); record = []; }
