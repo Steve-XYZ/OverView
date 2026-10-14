@@ -789,7 +789,9 @@ function wireRangeForm(): void {
     if (from.value.length === 0 || to.value.length === 0) return;
     const [start, end] = from.value <= to.value ? [from.value, to.value] : [to.value, from.value];
     void load({ from: start, to: end });
-    byId("range-form").closest("details")?.removeAttribute("open");
+    const picker = byId("range-form").closest("details");
+    picker?.removeAttribute("open");
+    picker?.querySelector<HTMLElement>("summary")?.focus();
   });
 }
 
@@ -845,7 +847,9 @@ function wireSectionNavigation(): void {
 
 function markSelected(selector: string, value: string): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>(`${selector} button`)) {
-    button.classList.toggle("is-selected", button.dataset["value"] === value);
+    const selected = button.dataset["value"] === value;
+    button.classList.toggle("is-selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
   }
 }
 

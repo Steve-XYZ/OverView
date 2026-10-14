@@ -23,6 +23,8 @@ html {
   --page: #080b18;
   --surface-1: #23232f;
   --surface-2: #2e2f3f;
+  --selected-bg: #f8f8fc;
+  --selected-text: #1d1d2a;
   --text-primary: #f7f6fb;
   --text-secondary: #bcbacb;
   --text-muted: #aaa7bb;
@@ -49,6 +51,8 @@ html {
   --page: #f7f7fc;
   --surface-1: #fff;
   --surface-2: #eeedf6;
+  --selected-bg: #232335;
+  --selected-text: #fff;
   --text-primary: #232335;
   --text-secondary: #656275;
   --text-muted: #746f85;
@@ -69,6 +73,8 @@ html {
     --page: #f7f7fc;
     --surface-1: #fff;
     --surface-2: #eeedf6;
+    --selected-bg: #232335;
+    --selected-text: #fff;
     --text-primary: #232335;
     --text-secondary: #656275;
     --text-muted: #746f85;
@@ -186,8 +192,8 @@ button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visibl
 }
 
 .main-nav .is-selected {
-  background: #f8f8fc;
-  color: #1d1d2a;
+  background: var(--selected-bg);
+  color: var(--selected-text);
 }
 
 .masthead-actions {
@@ -269,8 +275,11 @@ button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visibl
   overflow-wrap: anywhere;
 }
 
-.page-heading {
+.page-heading, .filters, .load-error {
   width: calc(100% - 310px);
+}
+
+.page-heading {
   display: flex;
   justify-content: space-between;
   align-items: flex-end;
@@ -323,7 +332,6 @@ h3 {
 }
 
 .filters {
-  width: calc(100% - 310px);
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -348,8 +356,8 @@ h3 {
 }
 
 .segmented .is-selected {
-  color: #20212c;
-  background: #eeecf6;
+  color: var(--selected-text);
+  background: var(--selected-bg);
 }
 
 .date-picker {
@@ -492,6 +500,10 @@ main[aria-busy='true'] {
   background: linear-gradient(115deg, #77dfd6, #9be995 57%, #d3f78b);
   color: #112c2b;
   border: 0;
+}
+
+.hero-card .hero-action:focus-visible {
+  outline-color: #112c2b;
 }
 
 .hero-top {
@@ -1099,7 +1111,7 @@ td.meta {
   .app-shell {
     padding: 32px 36px 22px;
   }
-  .page-heading, .filters {
+  .page-heading, .filters, .load-error {
     width: calc(100% - 344px);
   }
   .dashboard-grid {
@@ -1118,7 +1130,7 @@ td.meta {
   .viz-root {
     padding: 24px 18px;
   }
-  .page-heading, .filters {
+  .page-heading, .filters, .load-error {
     width: calc(100% - 272px);
   }
   .app-shell {
@@ -1155,7 +1167,7 @@ td.meta {
   .dashboard-grid {
     grid-template-columns: minmax(0, 1fr);
   }
-  .page-heading, .filters {
+  .page-heading, .filters, .load-error {
     width: 100%;
   }
   .workspace {
