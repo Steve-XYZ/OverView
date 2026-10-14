@@ -56,7 +56,7 @@ import type {
 
 export const DATABASE_URL_ENV = "DATABASE_URL";
 
-type Sql = ReturnType<typeof neon>;
+export type Sql = ReturnType<typeof neon>;
 type Row = Record<string, unknown>;
 
 interface UserRow {
@@ -73,9 +73,25 @@ interface TokenRow {
   readonly last_used_at: string | Date | null;
 }
 
-let schemaReady: Promise<void> | null = null;
+let productionStore: HostedStore | undefined;
 
 export function neonStore(): HostedStore {
+  return productionStore ??= createSqlStore(database);
+}
+
+export function createSqlStore(connect: () => Sql): HostedStore {
+  let schemaReady: Promise<void> | null = null;
+
+  async function ready(): Promise<Sql> {
+    const sql = connect();
+    schemaReady ??= ensureSchema(sql).catch((error: unknown) => {
+      schemaReady = null;
+      throw error;
+    });
+    await schemaReady;
+    return sql;
+  }
+
   return {
     async upsertUser(githubUserId: number, githubLogin: string): Promise<HostedUser> {
       const sql = await ready();
@@ -938,14 +954,8 @@ function database(): Sql {
   return neon(connectionString);
 }
 
-async function ready(): Promise<Sql> {
-  await ensureSchema();
-  return database();
-}
-
-function ensureSchema(): Promise<void> {
-  schemaReady ??= (async () => {
-    const sql = database();
+function ensureSchema(sql: Sql): Promise<void> {
+  return (async () => {
     // One transaction, so a cold start costs one round trip rather than one per table.
     await sql.transaction([
       sql`
@@ -1157,11 +1167,7 @@ function ensureSchema(): Promise<void> {
         )
       `,
     ]);
-  })().catch((error: unknown) => {
-    schemaReady = null;
-    throw error;
-  });
-  return schemaReady;
+  })();
 }
 
 function toUser(row: UserRow): HostedUser {
