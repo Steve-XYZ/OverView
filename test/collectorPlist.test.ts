@@ -8,6 +8,7 @@ import {
   COLLECTOR_INTERVAL_SECONDS,
   COLLECTOR_LABEL,
   collectorPaths,
+  launchdPaths,
   readPlistConfig,
 } from "../src/collector/launchd.ts";
 
@@ -77,11 +78,16 @@ describe("buildPlist", () => {
   });
 });
 
-describe("collectorPaths", () => {
-  it("keeps the agent, log and state under the home directory", () => {
+describe("collector paths", () => {
+  it("keeps the log and state under the home directory", () => {
     const paths = collectorPaths("/tmp/home");
-    assert.equal(paths.plistPath, `/tmp/home/Library/LaunchAgents/${COLLECTOR_LABEL}.plist`);
+    assert.equal(paths.configDir, "/tmp/home/.config/overview");
     assert.equal(paths.logPath, "/tmp/home/.config/overview/collector.log");
     assert.equal(paths.statePath, "/tmp/home/.config/overview/collector-state.json");
+  });
+
+  it("puts the LaunchAgent under Library/LaunchAgents", () => {
+    const paths = launchdPaths("/tmp/home");
+    assert.equal(paths.plistPath, `/tmp/home/Library/LaunchAgents/${COLLECTOR_LABEL}.plist`);
   });
 });

@@ -11,36 +11,33 @@
  * the plist; `collector run` reads `~/.config/overview/env` itself.
  */
 
-import { readFile, rm, writeFile, mkdir, stat } from "node:fs/promises";
+import { readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { run } from "../ingest/exec.ts";
+import {
+  COLLECTOR_INTERVAL_SECONDS,
+  collectorPaths,
+  logInfo,
+  resolveCliPath,
+  type CollectorPaths,
+} from "./paths.ts";
+
+export { COLLECTOR_INTERVAL_SECONDS, collectorPaths, logInfo, resolveCliPath };
+export type { CollectorPaths };
 
 export const COLLECTOR_LABEL = "com.overview.collector";
-/** Hourly. Frequent enough to stay current, sparse enough to dodge `gh` rate limits. */
-export const COLLECTOR_INTERVAL_SECONDS = 3600;
 
-export interface CollectorPaths {
-  readonly homeDir: string;
+export interface LaunchdPaths extends CollectorPaths {
   /** `~/Library/LaunchAgents/com.overview.collector.plist` */
   readonly plistPath: string;
-  /** Where launchd redirects the job's stdout and stderr. */
-  readonly logPath: string;
-  /** Small JSON record of the last run, read by `status` and `doctor`. */
-  readonly statePath: string;
-  /** `~/.config/overview` */
-  readonly configDir: string;
 }
 
-export function collectorPaths(homeDir: string = homedir()): CollectorPaths {
-  const configDir = join(homeDir, ".config", "overview");
+export function launchdPaths(homeDir: string = homedir()): LaunchdPaths {
   return {
-    homeDir,
+    ...collectorPaths(homeDir),
     plistPath: join(homeDir, "Library", "LaunchAgents", `${COLLECTOR_LABEL}.plist`),
-    logPath: join(configDir, "collector.log"),
-    statePath: join(configDir, "collector-state.json"),
-    configDir,
   };
 }
 
@@ -111,7 +108,7 @@ function escapeXml(value: string): string {
     .replaceAll('"', "&quot;");
 }
 
-export function plistInstalled(paths: CollectorPaths = collectorPaths()): boolean {
+export function plistInstalled(paths: LaunchdPaths = launchdPaths()): boolean {
   return existsSync(paths.plistPath);
 }
 
@@ -156,7 +153,7 @@ function unescapeXml(value: string): string {
 
 export async function installPlist(
   plist: string,
-  paths: CollectorPaths = collectorPaths(),
+  paths: LaunchdPaths = launchdPaths(),
 ): Promise<void> {
   await mkdir(dirname(paths.plistPath), { recursive: true });
   await mkdir(paths.configDir, { recursive: true });
@@ -177,7 +174,7 @@ export async function installPlist(
   }
 }
 
-export async function uninstallPlist(paths: CollectorPaths = collectorPaths()): Promise<boolean> {
+export async function uninstallPlist(paths: LaunchdPaths = launchdPaths()): Promise<boolean> {
   const existed = existsSync(paths.plistPath);
   // A loaded job survives a manually deleted plist, so always attempt bootout:
   // without it, hourly collection would keep firing after "uninstall".
@@ -202,23 +199,4 @@ export async function kickstartPlist(label: string = COLLECTOR_LABEL): Promise<v
 
 function currentUid(): number {
   return typeof process.getuid === "function" ? process.getuid() : 501;
-}
-
-/** Resolve the durable CLI entry point for a repo root: built output when present. */
-export function resolveCliPath(repoRoot: string): string {
-  const built = join(repoRoot, "dist", "cli.js");
-  if (existsSync(built)) return built;
-  return join(repoRoot, "src", "cli.ts");
-}
-
-/** Best-effort mtime/size of the job log, for `status` without reading it all. */
-export async function logInfo(
-  logPath: string,
-): Promise<{ exists: boolean; bytes: number; mtime: string | null }> {
-  try {
-    const info = await stat(logPath);
-    return { exists: true, bytes: info.size, mtime: info.mtime.toISOString() };
-  } catch {
-    return { exists: false, bytes: 0, mtime: null };
-  }
 }

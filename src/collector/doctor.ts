@@ -30,16 +30,21 @@ import {
 import { LINEAR_API_KEY_ENV, linearApiKey } from "../ingest/linear/linearApi.ts";
 import { PUBLISH_ENDPOINT_ENV, PUBLISH_TOKEN_ENV } from "../publish/publish.ts";
 import { collectorEnvPath, inspectCollectorEnvFile } from "./env.ts";
+import { collectorPaths, logInfo, type CollectorPaths } from "./paths.ts";
 import {
   COLLECTOR_LABEL,
-  collectorPaths,
-  logInfo,
+  launchdPaths,
   plistInstalled,
   plistLoaded,
   readPlistConfig,
-  type CollectorPaths,
 } from "./launchd.ts";
-import { readCollectorState } from "./run.ts";
+import {
+  readSystemdConfig,
+  systemdInstalled,
+  systemdPaths,
+  systemdTimerActive,
+} from "./systemd.ts";
+import { readCollectorState, type CollectorState } from "./run.ts";
 
 export type DoctorStatus = "ok" | "warn" | "fail";
 
@@ -439,38 +444,110 @@ async function checkLastPublication(paths: CollectorPaths, configPath: string): 
 }
 
 async function checkCollector(paths: CollectorPaths, configPath: string): Promise<DoctorCheck> {
-  if (!plistInstalled(paths)) {
+  if (process.platform === "linux") return await checkSystemdCollector(paths, configPath);
+  if (process.platform === "darwin") return await checkLaunchdCollector(paths, configPath);
+  return {
+    name: "collector",
+    status: "warn",
+    detail: "Scheduled collection is supported on macOS (launchd) and Linux (systemd user units) only.",
+  };
+}
+
+async function checkLaunchdCollector(
+  paths: CollectorPaths,
+  configPath: string,
+): Promise<DoctorCheck> {
+  const launchd = launchdPaths(paths.homeDir);
+  if (!plistInstalled(launchd)) {
     return {
       name: "collector",
       status: "warn",
       detail: `No LaunchAgent installed. Run \`overview collector install\` to automate sync→publish.`,
     };
   }
-  const [loaded, recorded, info, state] = await Promise.all([
+  const [armed, recorded, info, state] = await Promise.all([
     plistLoaded(COLLECTOR_LABEL),
-    readPlistConfig(paths.plistPath),
+    readPlistConfig(launchd.plistPath),
     logInfo(paths.logPath),
     readCollectorState(paths.statePath),
   ]);
-  const parts: string[] = [];
-  parts.push(loaded ? "loaded" : "installed but NOT loaded — runs will not fire until it is bootstrapped");
-  if (recorded.intervalSeconds !== null) parts.push(`every ${recorded.intervalSeconds}s`);
-  const watchesElsewhere = recorded.configPath !== null && recorded.configPath !== configPath;
-  if (watchesElsewhere) {
-    parts.push(`watches ${recorded.configPath} — not the config being diagnosed (${configPath})`);
+  return collectorSummary(
+    {
+      unitPath: launchd.plistPath,
+      armed,
+      armedDetail: "loaded",
+      disarmedDetail: "installed but NOT loaded; runs will not fire until it is bootstrapped",
+      ...recorded,
+      log: info,
+      state,
+    },
+    configPath,
+  );
+}
+
+async function checkSystemdCollector(
+  paths: CollectorPaths,
+  configPath: string,
+): Promise<DoctorCheck> {
+  const systemd = systemdPaths(paths.homeDir);
+  if (!systemdInstalled(systemd)) {
+    return {
+      name: "collector",
+      status: "warn",
+      detail: `No systemd user timer installed. Run \`overview collector install\` to automate sync→publish.`,
+    };
   }
-  if (state !== null) {
+  const [armed, recorded, info, state] = await Promise.all([
+    systemdTimerActive(),
+    readSystemdConfig(systemd),
+    logInfo(paths.logPath),
+    readCollectorState(paths.statePath),
+  ]);
+  return collectorSummary(
+    {
+      unitPath: systemd.timerPath,
+      armed,
+      armedDetail: "active",
+      disarmedDetail: "installed but NOT active; runs will not fire until it is started",
+      ...recorded,
+      log: info,
+      state,
+    },
+    configPath,
+  );
+}
+
+interface CollectorSummaryInput {
+  readonly unitPath: string;
+  readonly armed: boolean;
+  readonly armedDetail: string;
+  readonly disarmedDetail: string;
+  readonly intervalSeconds: number | null;
+  readonly configPath: string | null;
+  readonly log: { exists: boolean; bytes: number };
+  readonly state: CollectorState | null;
+}
+
+function collectorSummary(input: CollectorSummaryInput, configPath: string): DoctorCheck {
+  const parts: string[] = [];
+  parts.push(input.armed ? input.armedDetail : input.disarmedDetail);
+  if (input.intervalSeconds !== null) parts.push(`every ${input.intervalSeconds}s`);
+  const watchesElsewhere = input.configPath !== null && input.configPath !== configPath;
+  if (watchesElsewhere) {
+    parts.push(`watches ${input.configPath}, not the config being diagnosed (${configPath})`);
+  }
+  if (input.state !== null) {
     parts.push(
-      `last run ${state.lastRunAt.slice(0, 16).replace("T", " ")} UTC exit ${state.exitCode}`,
+      `last run ${input.state.lastRunAt.slice(0, 16).replace("T", " ")} UTC exit ${input.state.exitCode}`,
     );
-  } else if (info.exists) {
-    parts.push(`log ${paths.logPath} (${info.bytes} bytes)`);
+  } else if (input.log.exists) {
+    parts.push(`log only (${input.log.bytes} bytes), no recorded run yet`);
   } else {
     parts.push("never run");
   }
   const status: DoctorStatus =
-    !loaded || watchesElsewhere || state?.exitCode !== 0 ? "warn" : "ok";
-  return { name: "collector", status, detail: `${paths.plistPath}: ${parts.join("; ")}.` };
+    !input.armed || watchesElsewhere || input.state?.exitCode !== 0 ? "warn" : "ok";
+  return { name: "collector", status, detail: `${input.unitPath}: ${parts.join("; ")}.` };
 }
 
 function message(error: unknown): string {
