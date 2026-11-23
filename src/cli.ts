@@ -46,20 +46,30 @@ import {
   PUBLISH_TOKEN_ENV,
 } from "./publish/publish.ts";
 import { collectorEnvPath, loadCollectorEnv } from "./collector/env.ts";
+import { COLLECTOR_INTERVAL_SECONDS, collectorPaths, logInfo, resolveCliPath } from "./collector/paths.ts";
 import {
-  COLLECTOR_INTERVAL_SECONDS,
   COLLECTOR_LABEL,
   buildPlist,
-  collectorPaths,
   installPlist,
   kickstartPlist,
-  logInfo,
+  launchdPaths,
   plistInstalled,
   plistLoaded,
   readPlistConfig,
-  resolveCliPath,
   uninstallPlist,
 } from "./collector/launchd.ts";
+import {
+  SYSTEMD_TIMER,
+  buildSystemdService,
+  buildSystemdTimer,
+  installSystemd,
+  kickstartSystemd,
+  readSystemdConfig,
+  systemdInstalled,
+  systemdPaths,
+  systemdTimerActive,
+  uninstallSystemd,
+} from "./collector/systemd.ts";
 import { collectorRun, readCollectorState } from "./collector/run.ts";
 import { doctorOk, renderDoctor, runDoctor } from "./collector/doctor.ts";
 
@@ -447,6 +457,11 @@ async function collectorInstall(argv: string[]): Promise<void> {
   if (!Number.isInteger(interval) || interval < 300) {
     throw new ConfigError("--interval must be at least 300 seconds.");
   }
+  if (process.platform !== "darwin" && process.platform !== "linux") {
+    throw new ConfigError(
+      "Scheduled collection is supported on macOS (launchd) and Linux (systemd user units).",
+    );
+  }
 
   const { configPath } = await loadConfig(values.config);
   const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -456,26 +471,40 @@ async function collectorInstall(argv: string[]): Promise<void> {
   }
 
   const paths = collectorPaths();
+  const envPath = await ensureCollectorEnvFile(paths.homeDir);
 
-  // The scaffold must exist before the job is bootstrapped: with RunAtLoad
-  // the first run fires immediately, and it should see the file (even empty)
-  // rather than a missing path.
-  const envPath = collectorEnvPath();
-  if (!existsSync(envPath)) {
-    await mkdir(dirname(envPath), { recursive: true });
-    await writeFile(
-      envPath,
-      `# OverView collector credentials. Mode 0600: readable only by you.\n` +
-        `# The scheduled job reads this file because launchd never sees your shell.\n` +
-        `# Values here never override variables already in the environment.\n` +
-        `#\n` +
-        `# LINEAR_API_KEY=lin_api_...\n` +
-        `# OVERVIEW_PUBLISH_TOKEN=ovp_...\n` +
-        `# OVERVIEW_PUBLISH_URL=https://your-overview.vercel.app/api/publish\n`,
-      { mode: 0o600 },
+  if (process.platform === "linux") {
+    const systemd = systemdPaths();
+    await installSystemd(
+      buildSystemdService({
+        nodePath: process.execPath,
+        cliPath,
+        configPath,
+        logPath: paths.logPath,
+      }),
+      buildSystemdTimer(interval),
+      systemd,
     );
+
+    process.stdout.write(`Installed ${SYSTEMD_TIMER} (every ${interval}s).\n`);
+    process.stdout.write(`  watches ${configPath}\n`);
+    process.stdout.write(`  invokes ${cliPath}\n`);
+    process.stdout.write(`  logs to ${paths.logPath}\n`);
+    process.stdout.write(`  credentials in ${envPath}\n`);
+    process.stdout.write(
+      "The timer runs while your user session is active; `loginctl enable-linger` keeps it " +
+        "running after you log out.\n",
+    );
+    process.stdout.write(`Run \`overview doctor\` to confirm the next scheduled run will be complete.\n`);
+
+    if (values.now === true) {
+      await kickstartSystemd();
+      process.stdout.write("Started the job now; follow it with `overview collector logs`.\n");
+    }
+    return;
   }
 
+  const launchd = launchdPaths();
   const plist = buildPlist({
     nodePath: process.execPath,
     cliPath,
@@ -483,7 +512,7 @@ async function collectorInstall(argv: string[]): Promise<void> {
     logPath: paths.logPath,
     intervalSeconds: interval,
   });
-  await installPlist(plist, paths);
+  await installPlist(plist, launchd);
 
   process.stdout.write(`Installed ${COLLECTOR_LABEL} (every ${interval}s, run at login).\n`);
   process.stdout.write(`  watches ${configPath}\n`);
@@ -496,6 +525,25 @@ async function collectorInstall(argv: string[]): Promise<void> {
     await kickstartPlist(COLLECTOR_LABEL);
     process.stdout.write("Started the job now; follow it with `overview collector logs`.\n");
   }
+}
+
+/** The first run may fire immediately, so the file must exist before the scheduler starts. */
+async function ensureCollectorEnvFile(homeDir: string): Promise<string> {
+  const envPath = collectorEnvPath(homeDir);
+  if (existsSync(envPath)) return envPath;
+  await mkdir(dirname(envPath), { recursive: true });
+  await writeFile(
+    envPath,
+    `# OverView collector credentials. Mode 0600: readable only by you.\n` +
+      `# The scheduled job reads this file because it never sees your shell.\n` +
+      `# Values here never override variables already in the environment.\n` +
+      `#\n` +
+      `# LINEAR_API_KEY=lin_api_...\n` +
+      `# OVERVIEW_PUBLISH_TOKEN=ovp_...\n` +
+      `# OVERVIEW_PUBLISH_URL=https://your-overview.vercel.app/api/publish\n`,
+    { mode: 0o600 },
+  );
+  return envPath;
 }
 
 async function collectorRunCommand(argv: string[]): Promise<void> {
@@ -518,19 +566,23 @@ async function collectorStatus(argv: string[]): Promise<void> {
     allowPositionals: false,
   });
   const paths = collectorPaths();
-  const installed = plistInstalled(paths);
-  process.stdout.write(`${COLLECTOR_LABEL}: ${installed ? "installed" : "not installed"}\n`);
+  const linux = process.platform === "linux";
+  const installed = linux ? systemdInstalled(systemdPaths()) : plistInstalled(launchdPaths());
+  const unit = linux ? SYSTEMD_TIMER : COLLECTOR_LABEL;
+  process.stdout.write(`${unit}: ${installed ? "installed" : "not installed"}\n`);
   if (!installed) {
     process.stdout.write("Run `overview collector install` to automate sync -> publish.\n");
     return;
   }
-  const [loaded, recorded, info, state] = await Promise.all([
-    plistLoaded(COLLECTOR_LABEL),
-    readPlistConfig(paths.plistPath),
+  const [armed, recorded, info, state] = await Promise.all([
+    linux ? systemdTimerActive() : plistLoaded(COLLECTOR_LABEL),
+    linux ? readSystemdConfig(systemdPaths()) : readPlistConfig(launchdPaths().plistPath),
     logInfo(paths.logPath),
     readCollectorState(paths.statePath),
   ]);
-  process.stdout.write(`  job: ${loaded ? "loaded (armed)" : "NOT loaded — runs will not fire"}\n`);
+  const armedText = linux ? "active (armed)" : "loaded (armed)";
+  const disarmedText = linux ? "NOT active (runs will not fire)" : "NOT loaded (runs will not fire)";
+  process.stdout.write(`  job: ${armed ? armedText : disarmedText}\n`);
   if (recorded.intervalSeconds !== null) {
     process.stdout.write(`  interval: every ${recorded.intervalSeconds}s\n`);
   }
@@ -575,11 +627,13 @@ async function collectorLogs(argv: string[]): Promise<void> {
 }
 
 async function collectorUninstall(): Promise<void> {
-  const removed = await uninstallPlist(collectorPaths());
+  const linux = process.platform === "linux";
+  const removed = linux ? await uninstallSystemd() : await uninstallPlist();
+  const unit = linux ? SYSTEMD_TIMER : COLLECTOR_LABEL;
   process.stdout.write(
     removed
-      ? `Removed ${COLLECTOR_LABEL}. Local data and logs are untouched.\n`
-      : `${COLLECTOR_LABEL} is not installed.\n`,
+      ? `Removed ${unit}. Local data and logs are untouched.\n`
+      : `${unit} is not installed.\n`,
   );
 }
 

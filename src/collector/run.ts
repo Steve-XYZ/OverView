@@ -1,8 +1,8 @@
 /**
  * One unattended collection pass: `sync` then `publish`.
  *
- * This is what the LaunchAgent invokes hourly. It deliberately holds no
- * scheduling, no retries, and no daemon state — launchd owns when it runs.
+ * This is what the installed scheduler invokes hourly. It holds no scheduling,
+ * retries, or daemon state of its own; the OS scheduler owns when it runs.
  * Its only contract is isolation: a failed GitHub fetch, Linear request,
  * repository sync, or publication is recorded and reported, and never stops
  * the next scheduled run or corrupts the state the next run reads.
@@ -32,7 +32,7 @@ import {
 } from "../publish/publish.ts";
 import { openDatabase } from "../store/db.ts";
 import { loadCollectorEnv, collectorEnvPath } from "./env.ts";
-import { collectorPaths, type CollectorPaths } from "./launchd.ts";
+import { collectorPaths, type CollectorPaths } from "./paths.ts";
 
 export type PublishOutcome = "published" | "alreadyCurrent" | "skipped" | "failed";
 

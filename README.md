@@ -57,20 +57,26 @@ The file must be readable only by you (mode `0600`); OverView refuses to read
 it otherwise. Only `LINEAR_API_KEY`, `OVERVIEW_PUBLISH_TOKEN`, and
 `OVERVIEW_PUBLISH_URL` are imported, and variables already in the environment
 always win. Nothing in the file is ever printed to output or logs, and the
-launchd plist carries no secrets — only paths.
+scheduler units carry no secrets, only paths.
 
 ## Automatic collection
 
-`overview collector install` registers a user LaunchAgent that runs
-`sync -> publish` every hour and at login. OverView itself holds no scheduler
-and no daemon; macOS `launchd` owns the cadence and invokes the CLI directly,
-with no shell involved:
+`overview collector install` registers a user scheduler that runs
+`sync -> publish` every hour: a LaunchAgent managed by `launchd` on macOS, or a
+systemd user service plus timer on Linux. OverView itself holds no scheduler
+and no daemon; the OS owns the cadence and invokes the CLI directly, with no
+shell involved:
 
 ```bash
 node dist/cli.js collector install
 node dist/cli.js doctor     # confirm the next scheduled run will be complete
 node dist/cli.js collector run   # one manual pass, same as the scheduler does
 ```
+
+On macOS the job also runs at login. On Linux the timer runs while your user
+session is active; `loginctl enable-linger $USER` keeps it collecting after you
+log out. Both schedulers write the same log, state file and credential path, so
+`collector status`, `collector logs` and `doctor` read them the same way.
 
 A scheduled run is isolated by construction: a failed repository, provider, or
 publication is logged and recorded, and the next run proceeds as normal. The
@@ -92,7 +98,7 @@ collector's own state.
 | `report [--days N] [--json]` | Print the metrics |
 | `publish [--endpoint <https-url>] [--snapshot-only]` | Redact and upload normalized records plus the 7/30/90-day summaries |
 | `serve [--port N] [--host H]` | Serve the dashboard |
-| `collector install [--interval <seconds>] [--now]` | Install a user LaunchAgent that runs `sync -> publish` hourly |
+| `collector install [--interval <seconds>] [--now]` | Install a user LaunchAgent (macOS) or systemd timer (Linux) that runs `sync -> publish` hourly |
 | `collector run` | Perform one `sync -> publish` pass, as the scheduler would |
 | `collector status` | Show the scheduled job and the last run's outcome |
 | `collector logs [--lines N]` | Tail the scheduled job's log |
